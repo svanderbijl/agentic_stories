@@ -86,6 +86,7 @@ defmodule AgenticStoriesWeb do
       import Phoenix.HTML
       # Core UI components
       import AgenticStoriesWeb.CoreComponents
+      import AgenticStoriesWeb.StoryComponents
 
       # Common modules used in templates
       alias Phoenix.LiveView.JS

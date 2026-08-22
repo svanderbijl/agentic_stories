@@ -1,5 +1,47 @@
 import Config
 
+# The suite never talks to a real LLM: domain and engine tests go through the
+# Mox mock of the AgenticStories.LLM behaviour, and the Claude driver's own
+# tests route HTTP through Req.Test.
+config :agentic_stories, AgenticStories.LLM, adapter: AgenticStories.LLM.Mock
+
+config :agentic_stories, AgenticStories.LLM.Claude,
+  api_key: "test-key",
+  plug: {Req.Test, AgenticStories.LLM.Claude}
+
+config :agentic_stories, AgenticStories.LLM.Grok,
+  api_key: "test-key",
+  plug: {Req.Test, AgenticStories.LLM.Grok}
+
+config :agentic_stories, AgenticStories.LLM.OpenRouter,
+  api_key: "test-key",
+  plug: {Req.Test, AgenticStories.LLM.OpenRouter}
+
+config :agentic_stories, AgenticStories.LLM.Venice,
+  api_key: "test-key",
+  plug: {Req.Test, AgenticStories.LLM.Venice}
+
+# Avatars are off by default in tests; avatar-flow tests flip :enabled and
+# expect on AgenticStories.Imagery.Mock themselves.
+config :agentic_stories, AgenticStories.Imagery,
+  adapter: AgenticStories.Imagery.Mock,
+  enabled: false
+
+config :agentic_stories, AgenticStories.Imagery.GrokImagine,
+  api_key: "test-key",
+  plug: {Req.Test, AgenticStories.Imagery.GrokImagine}
+
+config :agentic_stories, AgenticStories.Imagery.Venice,
+  api_key: "test-key",
+  plug: {Req.Test, AgenticStories.Imagery.Venice}
+
+# Character agents never auto-start in tests; engine tests start them
+# explicitly and drive ticks by hand (the huge interval keeps scheduled ticks
+# from ever firing on their own).
+config :agentic_stories, AgenticStories.Engine,
+  start_agents: false,
+  tick_interval_ms: 60_000
+
 # Configure your database
 #
 # The MIX_TEST_PARTITION environment variable can be used

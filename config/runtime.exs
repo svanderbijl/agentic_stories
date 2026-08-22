@@ -20,6 +20,27 @@ if System.get_env("PHX_SERVER") do
   config :agentic_stories, AgenticStoriesWeb.Endpoint, server: true
 end
 
+# Provider keys are read here (not in dev/prod.exs) so every environment
+# picks them up at boot. Only set when present so config/test.exs keeps its
+# stubbed values in the suite.
+if api_key = System.get_env("ANTHROPIC_API_KEY") do
+  config :agentic_stories, AgenticStories.LLM.Claude, api_key: api_key
+end
+
+if api_key = System.get_env("XAI_API_KEY") do
+  config :agentic_stories, AgenticStories.Imagery.GrokImagine, api_key: api_key
+  config :agentic_stories, AgenticStories.LLM.Grok, api_key: api_key
+end
+
+if api_key = System.get_env("OPENROUTER_API_KEY") do
+  config :agentic_stories, AgenticStories.LLM.OpenRouter, api_key: api_key
+end
+
+if api_key = System.get_env("VENICE_API_KEY") do
+  config :agentic_stories, AgenticStories.LLM.Venice, api_key: api_key
+  config :agentic_stories, AgenticStories.Imagery.Venice, api_key: api_key
+end
+
 config :agentic_stories, AgenticStoriesWeb.Endpoint,
   http: [port: String.to_integer(System.get_env("PORT", "4000"))]
 

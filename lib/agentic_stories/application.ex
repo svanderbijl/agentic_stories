@@ -12,8 +12,8 @@ defmodule AgenticStories.Application do
       AgenticStories.Repo,
       {DNSCluster, query: Application.get_env(:agentic_stories, :dns_cluster_query) || :ignore},
       {Phoenix.PubSub, name: AgenticStories.PubSub},
-      # Start a worker by calling: AgenticStories.Worker.start_link(arg)
-      # {AgenticStories.Worker, arg},
+      # The story runtime: character agent registry + supervisor, weaver tasks
+      AgenticStories.Engine.Supervisor,
       # Start to serve requests, typically the last entry
       AgenticStoriesWeb.Endpoint
     ]

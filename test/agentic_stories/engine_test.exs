@@ -1,0 +1,410 @@
+defmodule AgenticStories.EngineTest do
+  # async: false — seed_story weaves in a spawned task and ensure_running
+  # flips global config; the shared sandbox keeps both simple.
+  use AgenticStories.DataCase, async: false
+
+  import AgenticStories.StoriesFixtures
+  import Mox
+
+  alias AgenticStories.Engine
+  alias AgenticStories.Engine.CharacterAgent
+  alias AgenticStories.LLM
+  alias AgenticStories.LLM.Response
+  alias AgenticStories.Stories
+  alias AgenticStories.Stories.{Message, Story}
+
+  setup :set_mox_global
+  setup :verify_on_exit!
+
+  describe "seed_story/1" do
+    test "creates a weaving story and completes it in the background" do
+      expect(LLM.Mock, :chat, fn _request ->
+        {:ok,
+         %Response{
+           text:
+             Jason.encode!(%{
+               "title" => "The Door Below",
+               "premise" => "p",
+               "arc" => "a",
+               "tone" => "t",
+               "style" => "s",
+               "opening" => "The tide pulls back.",
+               "opening_location" => "The Shore",
+               "locations" => [%{"name" => "The Shore", "description" => "Wet shingle."}],
+               "characters" => [%{"name" => "Maren", "persona" => "The keeper's sister."}]
+             })
+         }}
+      end)
+
+      Stories.subscribe()
+
+      assert {:ok, %Story{status: :weaving} = story} = Engine.seed_story("A door under the sea.")
+
+      assert_receive {:story_updated, %Story{status: :live, title: "The Door Below"}}, 2_000
+      assert [%{name: "Maren"}] = Stories.list_characters(story.id)
+    end
+
+    test "returns the changeset error for an invalid seed" do
+      assert {:error, %Ecto.Changeset{}} = Engine.seed_story(" ")
+    end
+
+    @tag capture_log: true
+    test "a crash in the weave frays the story instead of leaving it stuck" do
+      expect(LLM.Mock, :chat, fn _request -> raise "ANTHROPIC_API_KEY is not set" end)
+
+      Stories.subscribe()
+      assert {:ok, %Story{}} = Engine.seed_story("A door under the sea.")
+
+      assert_receive {:story_updated, %Story{status: :failed, failure_reason: reason}}, 2_000
+      assert reason =~ "ANTHROPIC_API_KEY"
+    end
+  end
+
+  describe "player_message/2" do
+    test "records the message and energizes the cast" do
+      story = story_fixture()
+      character = character_fixture(story, %{energy: 0})
+      pid = start_supervised!({CharacterAgent, character: character, story: story})
+      send(pid, :tick)
+      assert %{dormant?: true} = :sys.get_state(pid)
+
+      Stories.subscribe(story.id)
+
+      assert {:ok, %Message{kind: :player}} = Engine.player_message(story, "Hello?")
+
+      assert_receive {:message_created, %Message{kind: :player, content: "Hello?"}}
+      # player_energy is 6 in config; the dormant agent woke up with it
+      assert %{energy: 6, dormant?: false} = :sys.get_state(pid)
+    end
+
+    test "asterisked input is a deed, not a line" do
+      story = story_fixture()
+
+      assert {:ok, %Message{kind: :act, content: "douse the lamp", character_id: nil}} =
+               Engine.player_message(story, "*douse the lamp*")
+
+      assert {:ok, %Message{kind: :act, content: "listen at the door"}} =
+               Engine.player_message(story, "* listen at the door")
+
+      assert {:ok, %Message{kind: :player, content: "Hello * there"}} =
+               Engine.player_message(story, "Hello * there")
+    end
+  end
+
+  describe "character_message/4" do
+    test "passes the torch to the next cast member only, so chatter decays" do
+      story = story_fixture()
+      first = character_fixture(story, %{name: "Maren", energy: 1})
+      speaker = character_fixture(story, %{name: "Old Tosk", energy: 4})
+      third = character_fixture(story, %{name: "The Warden", energy: 1})
+
+      pids =
+        for {character, id} <- [{first, :first}, {speaker, :speaker}, {third, :third}],
+            into: %{} do
+          {id, start_supervised!({CharacterAgent, character: character, story: story}, id: id)}
+        end
+
+      assert {:ok, %Message{kind: :say}} =
+               Engine.character_message(story, speaker, :say, "The sea keeps what it likes.")
+
+      # chatter_energy (1) goes to the next character in cast order only
+      assert %{energy: 2} = :sys.get_state(pids.third)
+      assert %{energy: 1} = :sys.get_state(pids.first)
+      assert %{energy: 4} = :sys.get_state(pids.speaker)
+    end
+
+    test "the torch wraps around from the last cast member to the first" do
+      story = story_fixture()
+      first = character_fixture(story, %{name: "Maren", energy: 1})
+      speaker = character_fixture(story, %{name: "Old Tosk", energy: 4})
+
+      first_pid = start_supervised!({CharacterAgent, character: first, story: story}, id: :first)
+
+      assert {:ok, %Message{}} = Engine.character_message(story, speaker, :act, "nods slowly")
+      assert %{energy: 2} = :sys.get_state(first_pid)
+    end
+  end
+
+  describe "locality" do
+    setup do
+      story = story_fixture()
+      lamp_room = location_fixture(story, %{name: "The Lamp Room"})
+      shore = location_fixture(story, %{name: "The Shore"})
+      {:ok, story} = Stories.move_player(story, lamp_room.id)
+
+      # located stories check every player beat for narrated movement in a
+      # background task; answer NOTHING and let tests await the check so it
+      # never races test teardown
+      test_pid = self()
+
+      Mox.stub(LLM.Mock, :chat, fn request ->
+        if request.system =~ "decide whether the player", do: send(test_pid, :intent_checked)
+        {:ok, %Response{text: "NOTHING"}}
+      end)
+
+      %{story: story, lamp_room: lamp_room, shore: shore}
+    end
+
+    test "a player message fully charges the room and trickles elsewhere", ctx do
+      near =
+        character_fixture(ctx.story, %{name: "Maren", energy: 0, location_id: ctx.lamp_room.id})
+
+      far =
+        character_fixture(ctx.story, %{name: "Old Tosk", energy: 0, location_id: ctx.shore.id})
+
+      near_pid = start_supervised!({CharacterAgent, character: near, story: ctx.story}, id: :near)
+      far_pid = start_supervised!({CharacterAgent, character: far, story: ctx.story}, id: :far)
+
+      assert {:ok, %Message{location_id: location_id}} =
+               Engine.player_message(ctx.story, "Hello?")
+
+      assert location_id == ctx.lamp_room.id
+      # player_energy 6 in the room, ambient_energy 2 elsewhere
+      assert %{energy: 6} = :sys.get_state(near_pid)
+      assert %{energy: 2} = :sys.get_state(far_pid)
+      assert_receive :intent_checked, 1_000
+    end
+
+    test "the torch only passes within the same place", ctx do
+      speaker =
+        character_fixture(ctx.story, %{name: "Maren", energy: 4, location_id: ctx.lamp_room.id})
+
+      near =
+        character_fixture(ctx.story, %{name: "Brahm", energy: 1, location_id: ctx.lamp_room.id})
+
+      far =
+        character_fixture(ctx.story, %{name: "Old Tosk", energy: 1, location_id: ctx.shore.id})
+
+      near_pid = start_supervised!({CharacterAgent, character: near, story: ctx.story}, id: :near)
+      far_pid = start_supervised!({CharacterAgent, character: far, story: ctx.story}, id: :far)
+
+      assert {:ok, _message} = Engine.character_message(ctx.story, speaker, :say, "Look at this.")
+
+      assert %{energy: 2} = :sys.get_state(near_pid)
+      assert %{energy: 1} = :sys.get_state(far_pid)
+    end
+
+    test "a beat that narrates movement executes it", ctx do
+      Mox.stub(LLM.Mock, :chat, fn request ->
+        if request.system =~ "decide whether the player" do
+          {:ok, %Response{text: "The Shore"}}
+        else
+          {:ok, %Response{text: "NOTHING"}}
+        end
+      end)
+
+      Stories.subscribe(ctx.story.id)
+
+      assert {:ok, %Message{kind: :player}} =
+               Engine.player_message(ctx.story, "I walk down to the shore.")
+
+      assert_receive {:story_updated, %Story{player_location_id: shore_id}}, 2_000
+      assert shore_id == ctx.shore.id
+
+      assert_receive {:message_created,
+                      %Message{kind: :narration, content: "You make your way to The Shore."}},
+                     2_000
+    end
+
+    test "player_move relocates, narrates at both ends, and charges the destination", ctx do
+      dweller =
+        character_fixture(ctx.story, %{name: "Old Tosk", energy: 0, location_id: ctx.shore.id})
+
+      pid = start_supervised!({CharacterAgent, character: dweller, story: ctx.story})
+      Stories.subscribe(ctx.story.id)
+
+      assert {:ok, %Story{player_location_id: shore_id}} =
+               Engine.player_move(ctx.story, ctx.shore.id)
+
+      assert shore_id == ctx.shore.id
+      assert_receive {:message_created, %Message{kind: :narration, witnessed_by_player: true}}
+      assert %{energy: 6} = :sys.get_state(pid)
+    end
+
+    test "character_move records one beat witnessed at both ends and relocates", ctx do
+      character =
+        character_fixture(ctx.story, %{name: "Maren", energy: 4, location_id: ctx.shore.id})
+
+      location = ctx.lamp_room
+
+      assert {:ok, %Message{} = message, %{location_id: new_location}} =
+               Engine.character_move(ctx.story, character, location, "climbs the stairs")
+
+      assert new_location == location.id
+      # the player (in the lamp room) sees the arrival
+      assert message.witnessed_by_player == true
+    end
+  end
+
+  describe "scene plates" do
+    setup do
+      config = Application.fetch_env!(:agentic_stories, AgenticStories.Imagery)
+      on_exit(fn -> Application.put_env(:agentic_stories, AgenticStories.Imagery, config) end)
+
+      Application.put_env(
+        :agentic_stories,
+        AgenticStories.Imagery,
+        Keyword.put(config, :enabled, true)
+      )
+
+      story = story_fixture()
+      lamp_room = location_fixture(story, %{name: "The Lamp Room"})
+      shore = location_fixture(story, %{name: "The Shore", description: "Wet shingle."})
+      {:ok, story} = Stories.move_player(story, lamp_room.id)
+      Stories.subscribe(story.id)
+      %{story: story, lamp_room: lamp_room, shore: shore}
+    end
+
+    test "present characters ride along as portrait references", ctx do
+      character =
+        character_fixture(ctx.story, %{
+          name: "Old Tosk",
+          location_id: ctx.shore.id,
+          appearance: "Weathered, salt-white beard, oilskin coat."
+        })
+
+      {:ok, _} = Stories.put_character_avatar(character, <<255, 216, 255>>, "image/jpeg")
+
+      expect(AgenticStories.Imagery.Mock, :compose, fn prompt, references ->
+        assert prompt =~ "The Shore — Wet shingle."
+        assert prompt =~ "Old Tosk: Weathered, salt-white beard"
+        assert prompt =~ "portraits of the characters present"
+        assert [%{binary: <<255, 216, 255>>, content_type: "image/jpeg"}] = references
+        {:ok, %{binary: <<1, 2, 3>>, content_type: "image/jpeg"}}
+      end)
+
+      assert :ok = Engine.commission_plate(ctx.story, ctx.shore, "The Shore", "The tide turns.")
+
+      assert_receive {:character_updated, _}, 1_000
+
+      assert_receive {:message_created, %Message{kind: :illustration, content: "The Shore"}},
+                     1_000
+    end
+
+    test "a declined composition still paints the scene from words", ctx do
+      character = character_fixture(ctx.story, %{location_id: ctx.shore.id})
+      {:ok, _} = Stories.put_character_avatar(character, <<255>>, "image/jpeg")
+
+      expect(AgenticStories.Imagery.Mock, :compose, fn _prompt, _references ->
+        {:error, {:http_error, 422, %{}}}
+      end)
+
+      expect(AgenticStories.Imagery.Mock, :generate, fn _prompt ->
+        {:ok, %{binary: <<9>>, content_type: "image/jpeg"}}
+      end)
+
+      assert :ok = Engine.commission_plate(ctx.story, ctx.shore, "The Shore", "The tide turns.")
+      assert_receive {:message_created, %Message{kind: :illustration}}, 1_000
+    end
+
+    test "each place earns exactly one establishing plate, on first arrival", ctx do
+      stub(AgenticStories.Imagery.Mock, :generate, fn prompt ->
+        assert prompt =~ "establishing view"
+        {:ok, %{binary: <<7>>, content_type: "image/jpeg"}}
+      end)
+
+      {:ok, story} = Engine.player_move(ctx.story, ctx.shore.id)
+
+      assert_receive {:message_created, %Message{kind: :illustration, content: "The Shore"}},
+                     1_000
+
+      {:ok, story} = Engine.player_move(story, ctx.lamp_room.id)
+
+      assert_receive {:message_created, %Message{kind: :illustration, content: "The Lamp Room"}},
+                     1_000
+
+      {:ok, _story} = Engine.player_move(story, ctx.shore.id)
+      refute_receive {:message_created, %Message{kind: :illustration}}, 100
+    end
+  end
+
+  describe "end_story/1 and delete_story/1" do
+    test "ending a story closes the book and retires the cast" do
+      story = story_fixture()
+      character = character_fixture(story)
+
+      pid = start_supervised!({CharacterAgent, character: character, story: story})
+      Process.unlink(pid)
+      ref = Process.monitor(pid)
+
+      Stories.subscribe(story.id)
+
+      assert {:ok, %Story{status: :finished}} = Engine.end_story(story)
+
+      assert_receive {:message_created,
+                      %Message{kind: :narration, content: "Here you close" <> _}}
+
+      assert_receive {:DOWN, ^ref, :process, ^pid, :shutdown}, 1_000
+      assert Stories.get_story!(story.id).status == :finished
+
+      # ending an already-finished story is a quiet no-op
+      assert {:ok, %Story{}} = Engine.end_story(Stories.get_story!(story.id))
+    end
+
+    test "deleting a story retires agents, removes everything, and broadcasts" do
+      story = story_fixture()
+      character = character_fixture(story)
+      message_fixture(story)
+
+      pid = start_supervised!({CharacterAgent, character: character, story: story})
+      Process.unlink(pid)
+      ref = Process.monitor(pid)
+
+      Stories.subscribe(story.id)
+
+      assert {:ok, %Story{}} = Engine.delete_story(story)
+
+      assert_receive {:story_deleted, %Story{}}
+      assert_receive {:DOWN, ^ref, :process, ^pid, :shutdown}, 1_000
+      assert_raise Ecto.NoResultsError, fn -> Stories.get_story!(story.id) end
+      assert Stories.list_messages(story.id) == []
+    end
+  end
+
+  describe "ensure_running/1" do
+    test "is a no-op while agents are disabled (the test default)" do
+      story = story_fixture()
+      character = character_fixture(story)
+
+      assert :ok = Engine.ensure_running(story)
+      assert CharacterAgent.whereis(character.id) == nil
+    end
+
+    test "starts an agent per character when enabled, idempotently" do
+      config = Application.fetch_env!(:agentic_stories, AgenticStories.Engine)
+      on_exit(fn -> Application.put_env(:agentic_stories, AgenticStories.Engine, config) end)
+
+      Application.put_env(
+        :agentic_stories,
+        AgenticStories.Engine,
+        Keyword.put(config, :start_agents, true)
+      )
+
+      story = story_fixture()
+      character = character_fixture(story)
+
+      assert :ok = Engine.ensure_running(story)
+      pid = CharacterAgent.whereis(character.id)
+      assert is_pid(pid)
+
+      # idempotent: a second call reuses the running agent
+      assert :ok = Engine.ensure_running(story)
+      assert CharacterAgent.whereis(character.id) == pid
+
+      # the Director rises with the cast
+      director = AgenticStories.Engine.DirectorAgent.whereis(story.id)
+      assert is_pid(director)
+
+      on_exit(fn ->
+        for agent <- [pid, director] do
+          DynamicSupervisor.terminate_child(AgenticStories.Engine.CharacterSupervisor, agent)
+        end
+      end)
+    end
+
+    test "ignores stories that are not live" do
+      story = weaving_story_fixture()
+      assert :ok = Engine.ensure_running(story)
+    end
+  end
+end

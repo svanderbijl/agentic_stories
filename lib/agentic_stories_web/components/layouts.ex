@@ -35,38 +35,23 @@ defmodule AgenticStoriesWeb.Layouts do
 
   def app(assigns) do
     ~H"""
-    <header class="navbar px-4 sm:px-6 lg:px-8">
-      <div class="flex-1">
-        <a href="/" class="flex-1 flex w-fit items-center gap-2">
-          <img src={~p"/images/logo.svg"} width="36" />
-          <span class="text-sm font-semibold">v{Application.spec(:phoenix, :vsn)}</span>
-        </a>
-      </div>
-      <div class="flex-none">
-        <ul class="flex flex-column px-1 space-x-4 items-center">
-          <li>
-            <a href="https://phoenixframework.org/" class="btn btn-ghost">Website</a>
-          </li>
-          <li>
-            <a href="https://github.com/phoenixframework/phoenix" class="btn btn-ghost">GitHub</a>
-          </li>
-          <li>
-            <.theme_toggle />
-          </li>
-          <li>
-            <a href="https://phoenix.hexdocs.pm/overview.html" class="btn btn-primary">
-              Get Started <span aria-hidden="true">&rarr;</span>
-            </a>
-          </li>
-        </ul>
-      </div>
-    </header>
+    <div class="flex h-dvh flex-col">
+      <header class="flex shrink-0 items-center justify-between border-b border-edge/70 px-5 py-3 sm:px-8">
+        <.link navigate={~p"/"} class="group flex items-baseline gap-3">
+          <span class="font-display text-lg font-semibold tracking-tight text-ink">
+            Agentic&nbsp;Stories
+          </span>
+          <span class="hidden font-mono text-[10px] tracking-[0.22em] text-ink-faint uppercase transition-colors group-hover:text-ember sm:inline">
+            a living fiction engine
+          </span>
+        </.link>
+        <.theme_toggle />
+      </header>
 
-    <main class="px-4 py-20 sm:px-6 lg:px-8">
-      <div class="mx-auto max-w-2xl space-y-4">
+      <main class="min-h-0 flex-1">
         {render_slot(@inner_block)}
-      </div>
-    </main>
+      </main>
+    </div>
 
     <.flash_group flash={@flash} />
     """
@@ -128,31 +113,32 @@ defmodule AgenticStoriesWeb.Layouts do
   """
   def theme_toggle(assigns) do
     ~H"""
-    <div class="card relative flex flex-row items-center border-2 border-base-300 bg-base-300 rounded-full">
-      <div class="absolute w-1/3 h-full rounded-full border-1 border-base-200 bg-base-100 brightness-200 left-0 [[data-theme=light]_&]:left-1/3 [[data-theme=dark]_&]:left-2/3 [[data-theme-source=system]_&]:!left-0 transition-[left]" />
-
+    <div class="flex items-center gap-0.5 rounded-full border border-edge p-0.5">
       <button
-        class="flex p-2 cursor-pointer w-1/3"
+        class="cursor-pointer rounded-full p-1.5 text-ink-faint transition-colors hover:text-ink [[data-theme-source=system]_&]:bg-ember-soft [[data-theme-source=system]_&]:text-ember"
         phx-click={JS.dispatch("phx:set-theme")}
         data-phx-theme="system"
+        title="Follow the system"
       >
-        <.icon name="hero-computer-desktop-micro" class="size-4 opacity-75 hover:opacity-100" />
+        <.icon name="hero-computer-desktop-micro" class="size-3.5" />
       </button>
 
       <button
-        class="flex p-2 cursor-pointer w-1/3"
+        class="cursor-pointer rounded-full p-1.5 text-ink-faint transition-colors hover:text-ink [[data-theme-source=user][data-theme=light]_&]:bg-ember-soft [[data-theme-source=user][data-theme=light]_&]:text-ember"
         phx-click={JS.dispatch("phx:set-theme")}
         data-phx-theme="light"
+        title="Daylight"
       >
-        <.icon name="hero-sun-micro" class="size-4 opacity-75 hover:opacity-100" />
+        <.icon name="hero-sun-micro" class="size-3.5" />
       </button>
 
       <button
-        class="flex p-2 cursor-pointer w-1/3"
+        class="cursor-pointer rounded-full p-1.5 text-ink-faint transition-colors hover:text-ink [[data-theme-source=user][data-theme=dark]_&]:bg-ember-soft [[data-theme-source=user][data-theme=dark]_&]:text-ember"
         phx-click={JS.dispatch("phx:set-theme")}
         data-phx-theme="dark"
+        title="Lamplight"
       >
-        <.icon name="hero-moon-micro" class="size-4 opacity-75 hover:opacity-100" />
+        <.icon name="hero-moon-micro" class="size-3.5" />
       </button>
     </div>
     """

@@ -17,7 +17,11 @@ defmodule AgenticStoriesWeb.Router do
   scope "/", AgenticStoriesWeb do
     pipe_through :browser
 
-    get "/", PageController, :home
+    live "/", HomeLive, :index
+    live "/stories/:id", StoryLive, :show
+    get "/stories/:id/read", ReaderController, :show
+    get "/avatars/:id", AvatarController, :show
+    get "/plates/:id", PlateController, :show
   end
 
   # Other scopes may use custom stacks.
