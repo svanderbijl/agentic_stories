@@ -5,6 +5,7 @@ defmodule AgenticStories.Engine.DirectorAgentTest do
   import AgenticStories.StoriesFixtures
   import Mox
 
+  alias AgenticStories.Engine
   alias AgenticStories.Engine.{CharacterAgent, DirectorAgent}
   alias AgenticStories.LLM
   alias AgenticStories.LLM.Response
@@ -21,6 +22,18 @@ defmodule AgenticStories.Engine.DirectorAgentTest do
     character = character_fixture(story, %{energy: 0, location_id: location.id})
     Stories.subscribe(story.id)
     %{story: story, location: location, character: character}
+  end
+
+  test "the Director does not narrate over a player who is mid-sentence", ctx do
+    Engine.player_typing(ctx.story)
+
+    pid = start_supervised!({DirectorAgent, story: ctx.story})
+    send(pid, :tick)
+
+    # no LLM call, no energy spent — the look simply comes back around
+    assert %{energy: energy} = :sys.get_state(pid)
+    assert energy == AgenticStories.Engine.config(:director_energy)
+    refute_receive {:message_created, _message}, 50
   end
 
   test "a narrate direction lands as narration and stirs the room", ctx do

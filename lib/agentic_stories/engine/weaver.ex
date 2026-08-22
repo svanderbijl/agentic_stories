@@ -25,8 +25,7 @@ defmodule AgenticStories.Engine.Weaver do
     with {:ok, response} <- LLM.chat(request, story_id: story.id, purpose: :weave),
          {:ok, blueprint} <- parse_blueprint(response.text),
          {:ok, story} <- Stories.complete_weaving(story, blueprint) do
-      paint_avatars(story)
-      paint_opening_plate(story, blueprint)
+      paint_cast_and_opening(story, blueprint)
       {:ok, story}
     else
       error ->
@@ -36,16 +35,27 @@ defmodule AgenticStories.Engine.Weaver do
     end
   end
 
-  # Avatars are painted best-effort in the background, one task per
-  # character; each broadcasts a character_updated as it lands. A story is
-  # never worse off for a failed portrait.
-  defp paint_avatars(story) do
+  # Portraits are painted best-effort in the background, concurrently; each
+  # broadcasts a character_updated as it lands. A story is never worse off
+  # for a failed portrait.
+  #
+  # The opening plate waits for them ON PURPOSE: it is composed from the
+  # cast's portraits, and a plate that races them always wins the race and
+  # always paints an empty room.
+  defp paint_cast_and_opening(story, blueprint) do
     if Imagery.enabled?() do
-      for character <- Stories.list_characters(story.id) do
-        Task.Supervisor.start_child(AgenticStories.Engine.TaskSupervisor, fn ->
-          paint_avatar(story, character)
-        end)
-      end
+      Task.Supervisor.start_child(AgenticStories.Engine.TaskSupervisor, fn ->
+        story.id
+        |> Stories.list_characters()
+        |> Task.async_stream(&paint_avatar(story, &1),
+          max_concurrency: 4,
+          timeout: 180_000,
+          on_timeout: :kill_task
+        )
+        |> Stream.run()
+
+        paint_opening_plate(story, blueprint)
+      end)
     end
 
     :ok
@@ -64,9 +74,8 @@ defmodule AgenticStories.Engine.Weaver do
       Logger.warning("no portrait for #{character.name}: #{Exception.message(exception)}")
   end
 
-  # The opening scene earns the story's first establishing plate. It runs
-  # concurrently with the portraits, so it paints from appearance text; the
-  # portraits become references for every later plate.
+  # The opening scene earns the story's first establishing plate, painted
+  # once the portraits are in so the cast is actually in the picture.
   defp paint_opening_plate(story, blueprint) do
     location =
       story.id

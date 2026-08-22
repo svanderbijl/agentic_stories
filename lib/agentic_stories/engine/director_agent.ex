@@ -13,6 +13,7 @@ defmodule AgenticStories.Engine.DirectorAgent do
 
   alias AgenticStories.Engine
   alias AgenticStories.Engine.DirectorMind
+  alias AgenticStories.Engine.Presence
   alias AgenticStories.Stories
 
   ## Client
@@ -90,6 +91,10 @@ defmodule AgenticStories.Engine.DirectorAgent do
     cond do
       story.status != :live ->
         {:stop, :normal, state}
+
+      # never narrate over someone who is mid-sentence
+      Presence.typing?(story.id) ->
+        {:noreply, schedule_tick(state, attentive_delay())}
 
       state.energy >= Engine.config(:tick_cost) ->
         state = %{state | story: story, energy: state.energy - Engine.config(:tick_cost)}

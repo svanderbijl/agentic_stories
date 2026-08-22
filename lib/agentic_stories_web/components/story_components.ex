@@ -121,8 +121,9 @@ defmodule AgenticStoriesWeb.StoryComponents do
   end
 
   @doc """
-  One beat of the story, typeset by kind: narration as book prose, dialogue
-  as a script line under a small-caps name, actions as stage directions,
+  One beat of the story, typeset by kind: narration as book prose, a spoken
+  beat as prose under a small-caps name (the quotation marks are the
+  character's own), silent beats as stage directions,
   and the player's words set off by an ember rule. Every beat carries a
   faint timestamp in its meta row.
   """
@@ -156,7 +157,7 @@ defmodule AgenticStoriesWeb.StoryComponents do
       <p
         class="mt-1 font-serif text-[1.0625rem] leading-[1.8] whitespace-pre-wrap text-ink"
         phx-no-format
-      ><span class="mr-1 text-ink-faint" aria-hidden="true">—</span>{@message.content}</p>
+      >{@message.content}</p>
     </div>
     """
   end

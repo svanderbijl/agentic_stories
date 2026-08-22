@@ -103,13 +103,13 @@ defmodule AgenticStories.Engine.WeaverTest do
         {:ok, %{binary: <<255, 216, 255>>, content_type: "image/jpeg"}}
       end)
 
-      # the opening plate races the portraits, so it may arrive with or
-      # without references — stub both paths
-      stub(Imagery.Mock, :generate, fn _prompt ->
-        {:ok, %{binary: <<255, 216, 255>>, content_type: "image/jpeg"}}
-      end)
-
-      stub(Imagery.Mock, :compose, fn _prompt, _references ->
+      # The opening plate is painted after the portraits, so it composes
+      # around them rather than racing them into an empty room. Only Maren
+      # is on The Shore; Old Tosk is up in the lamp room and stays out of it.
+      expect(Imagery.Mock, :compose, fn prompt, references ->
+        assert [%{content_type: "image/jpeg"}] = references
+        assert prompt =~ "source image 1: Maren"
+        refute prompt =~ "Old Tosk"
         {:ok, %{binary: <<255, 216, 255>>, content_type: "image/jpeg"}}
       end)
 

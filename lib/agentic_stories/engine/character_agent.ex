@@ -24,6 +24,7 @@ defmodule AgenticStories.Engine.CharacterAgent do
 
   alias AgenticStories.Engine
   alias AgenticStories.Engine.CharacterMind
+  alias AgenticStories.Engine.Presence
   alias AgenticStories.Stories
 
   ## Client
@@ -140,12 +141,19 @@ defmodule AgenticStories.Engine.CharacterAgent do
 
   @impl true
   def handle_info(:tick, state) do
-    if state.energy >= Engine.config(:tick_cost) do
-      state = persist_energy(%{state | energy: state.energy - Engine.config(:tick_cost)})
-      {state, next_delay} = state |> consolidate_memory() |> take_turn()
-      {:noreply, schedule_tick(state, next_delay)}
-    else
-      {:noreply, %{state | dormant?: true, tick_timer: nil}}
+    cond do
+      # the player is writing: the floor is theirs. Yield without spending —
+      # a held tick costs nothing and comes back around in a couple of seconds.
+      Presence.typing?(state.story.id) ->
+        {:noreply, schedule_tick(state, wake_delay())}
+
+      state.energy >= Engine.config(:tick_cost) ->
+        state = persist_energy(%{state | energy: state.energy - Engine.config(:tick_cost)})
+        {state, next_delay} = state |> consolidate_memory() |> take_turn()
+        {:noreply, schedule_tick(state, next_delay)}
+
+      true ->
+        {:noreply, %{state | dormant?: true, tick_timer: nil}}
     end
   end
 
@@ -247,9 +255,10 @@ defmodule AgenticStories.Engine.CharacterAgent do
       end)
   end
 
-  # Post-decision guards. A collision (the conversation moved while this
-  # character was thinking) holds the line but retries at the wake delay —
-  # they still have something to say. A repetition is just dropped.
+  # Post-decision guards. A collision (the conversation moved, or the player
+  # started typing, while this character was thinking) holds the line but
+  # retries at the wake delay — they still have something to say. A
+  # repetition is just dropped.
   defp attempt(%{story: story, character: character} = state, kind, text, messages) do
     case verdict(character, text, messages) do
       :ok ->
@@ -263,6 +272,10 @@ defmodule AgenticStories.Engine.CharacterAgent do
       :repetition ->
         Logger.debug("#{character.name} almost repeated themselves")
         {state, tick_delay(), false}
+
+      :monologue ->
+        Logger.debug("#{character.name} would have followed themselves — the floor is not theirs")
+        {state, tick_delay(), false}
     end
   end
 
@@ -274,9 +287,29 @@ defmodule AgenticStories.Engine.CharacterAgent do
       end
 
     cond do
+      # they started typing while this line was being thought up: same as
+      # any other collision — hold it, come back when the player has spoken.
+      Presence.typing?(character.story_id) -> :collision
+      following_themselves?(character, messages) -> :monologue
       conversation_moved?(character, snapshot) -> :collision
       CharacterMind.repetitive?(character, text, messages) -> :repetition
       true -> :ok
+    end
+  end
+
+  # A player message funds three ticks, so a character with something to say
+  # will happily say it three times in a row — which reads as one person
+  # talking to themselves, not as a scene. One beat each, then the floor goes
+  # back: they may follow the player, another character, or the Director, but
+  # never their own last word. Moves are exempt (they leave through their own
+  # path), so walking out on your own line still works.
+  defp following_themselves?(character, messages) do
+    case List.last(messages) do
+      %Stories.Message{kind: kind, character_id: id} when kind in [:say, :act] ->
+        id == character.id
+
+      _ ->
+        false
     end
   end
 

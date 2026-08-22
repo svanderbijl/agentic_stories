@@ -9,7 +9,7 @@ defmodule AgenticStories.Engine do
 
   require Logger
 
-  alias AgenticStories.Engine.{CharacterAgent, DirectorAgent, Narrator, Weaver}
+  alias AgenticStories.Engine.{CharacterAgent, DirectorAgent, Narrator, Presence, Weaver}
   alias AgenticStories.Imagery
   alias AgenticStories.Stories
   alias AgenticStories.Stories.{Character, Location, Story}
@@ -77,6 +77,8 @@ defmodule AgenticStories.Engine do
     attrs = %{kind: kind, content: content, location_id: story.player_location_id}
 
     with {:ok, message} <- Stories.create_message(story, attrs) do
+      # the sentence has landed; the floor is the cast's again
+      Presence.stopped_typing(story.id)
       ensure_running(story)
       energize_cast(story)
       follow_narrated_move(story, content)
@@ -132,6 +134,20 @@ defmodule AgenticStories.Engine do
   defp co_located?(%Character{location_id: where}, %Story{player_location_id: player}) do
     is_nil(where) or is_nil(player) or where == player
   end
+
+  @doc """
+  The player is writing. Until they send (or `typing_grace_ms` passes), the
+  cast and the Director yield the floor: a tick that lands during a draft
+  costs nothing and simply comes back around, and a line drafted before the
+  player started typing is held rather than spoken over them.
+  """
+  @spec player_typing(Story.t()) :: :ok
+  def player_typing(%Story{status: :live} = story), do: Presence.typing(story.id)
+  def player_typing(%Story{}), do: :ok
+
+  @doc "The draft was sent or cleared: the cast may speak again immediately."
+  @spec player_stopped_typing(Story.t()) :: :ok
+  def player_stopped_typing(%Story{} = story), do: Presence.stopped_typing(story.id)
 
   @doc """
   Records a character's utterance (`:say`) or action (`:act`) where they
@@ -240,6 +256,8 @@ defmodule AgenticStories.Engine do
     with {:ok, _message} <- Stories.create_message(story, %{kind: :narration, content: closing}),
          {:ok, story} <- Stories.finish_story(story) do
       retire_story_agents(story.id)
+      # an ending is the biggest turn a story takes: it earns a last plate
+      commission_plate(story, player_location(story), "The end", closing)
       {:ok, story}
     end
   end
@@ -326,16 +344,60 @@ defmodule AgenticStories.Engine do
         end
 
       {:illustrate, prompt, caption} ->
-        location =
-          story.player_location_id &&
-            Enum.find(locations, &(&1.id == story.player_location_id))
+        # The prompt invites plates at real turning points; this is what keeps
+        # a run of them (and the bill) in check. Code-side on purpose — the
+        # Director cannot count beats, and asking it to would only cost tokens.
+        if Stories.beats_since_plate(story.id) >= config(:plate_cooldown_beats) do
+          location =
+            story.player_location_id && Enum.find(locations, &(&1.id == story.player_location_id))
 
-        commission_plate(story, location, caption, prompt)
+          commission_plate(story, location, caption, prompt)
+        else
+          Logger.debug("plate for \"#{story.title}\" skipped — the last one is still fresh")
+          :ok
+        end
 
       :wait ->
         :ok
     end
   end
+
+  @doc """
+  The player asks for a picture of where they are. Unlike every other plate,
+  this one is not commissioned from a caller who already knows the scene: the
+  Narrator reads the story back first and works out who is present, how they
+  are standing, what they are wearing by now, and what the place looks like.
+
+  Runs in the background — the read-back and the render both take a while —
+  and answers over PubSub like any other beat. The Director's plate cooldown
+  does not apply: the player asked.
+  """
+  @spec request_plate(Story.t()) :: :ok
+  def request_plate(%Story{status: :live} = story) do
+    if Imagery.enabled?() do
+      Task.Supervisor.start_child(AgenticStories.Engine.TaskSupervisor, fn ->
+        location = player_location(story)
+        # no locations at all (a legacy or frayed story) reads as "everyone
+        # is here", the same degradation path witnessing uses
+        present =
+          case location do
+            nil -> Stories.list_characters(story.id)
+            location -> present_characters(story, location)
+          end
+
+        beats = story.id |> Stories.player_messages() |> Enum.take(-config(:memory_window))
+
+        case Narrator.tableau(story, location, present, beats) do
+          {:ok, scene, caption} -> paint_plate(story, location, caption, scene, present)
+          :none -> Logger.warning("no tableau for \"#{story.title}\"; picture skipped")
+        end
+      end)
+    end
+
+    :ok
+  end
+
+  def request_plate(%Story{}), do: :ok
 
   @doc """
   Paints a scene plate in the background: present characters' portraits ride
@@ -356,28 +418,27 @@ defmodule AgenticStories.Engine do
   end
 
   defp paint_plate(story, location, caption, scene, present) do
-    references =
-      present
-      |> Enum.filter(& &1.avatar_type)
-      |> Enum.take(3)
-      |> Enum.flat_map(fn character ->
-        case Stories.get_avatar(character.id) do
-          {binary, content_type} -> [%{binary: binary, content_type: content_type}]
-          nil -> []
-        end
-      end)
-
-    art = plate_art_direction(story, location, scene, present, references != [])
+    portraits = portraits(present)
 
     result =
-      case references do
+      case portraits do
         [] ->
-          Imagery.generate(art)
+          Imagery.generate(plate_art_direction(story, location, scene, present))
 
-        references ->
-          with {:error, _reason} <- Imagery.compose(art, references) do
-            # composition declined: still paint the scene from words alone
-            Imagery.generate(art)
+        portraits ->
+          cast = Enum.map(portraits, &elem(&1, 0))
+          references = Enum.map(portraits, &elem(&1, 1))
+
+          case Imagery.compose(plate_composition(story, location, scene, cast), references) do
+            {:ok, image} ->
+              {:ok, image}
+
+            {:error, reason} ->
+              # Say why. A silent fallback here is exactly how a bad edit
+              # model or a rejected payload hides for weeks as the vague
+              # complaint "the plates never have anyone in them".
+              Logger.warning("no composition for \"#{story.title}\": #{inspect(reason)}")
+              Imagery.generate(plate_art_direction(story, location, scene, present))
           end
       end
 
@@ -396,42 +457,77 @@ defmodule AgenticStories.Engine do
     end
   end
 
-  defp plate_art_direction(story, location, scene, present, references?) do
-    place =
-      case location do
-        nil -> ""
-        location -> "The place: #{location.name} — #{location.description}\n"
+  # The characters whose portraits can ride along as reference images, paired
+  # with the images themselves — capped at the three the port accepts, in
+  # cast order, so the names in the prompt line up with the source images.
+  defp portraits(present) do
+    present
+    |> Enum.filter(& &1.avatar_type)
+    |> Enum.take(3)
+    |> Enum.flat_map(fn character ->
+      case Stories.get_avatar(character.id) do
+        {binary, content_type} -> [{character, %{binary: binary, content_type: content_type}}]
+        nil -> []
       end
+    end)
+  end
 
+  # Words only. The cast leads: an art direction that opens with camera talk
+  # and buries the people at the bottom gets back an empty room.
+  defp plate_art_direction(story, location, scene, present) do
+    """
+    #{cast_clause(present)}#{place_clause(location)}What is happening: #{scene}
+
+    Paint it as a photorealistic film still for a work of interactive fiction:
+    the people above clearly visible in frame, natural light, shallow depth of
+    field, no text or lettering anywhere. The story's tone: #{story.tone}.
+    """
+  end
+
+  # With reference portraits this is an EDIT, not a fresh render: the first
+  # source image is the base the model works from, so name the people in the
+  # order their portraits were sent and ask for a new scene around them.
+  defp plate_composition(story, location, scene, cast) do
     people =
-      case present do
-        [] ->
-          ""
-
-        present ->
-          lines =
-            Enum.map_join(present, "\n", fn character ->
-              "- #{character.name}: #{character.appearance || character.persona}"
-            end)
-
-          "Present in the scene:\n#{lines}\n"
-      end
-
-    sources =
-      if references?,
-        do:
-          "The source images are portraits of the characters present — " <>
-            "depict these same people, unmistakably, within the scene.\n",
-        else: ""
+      cast
+      |> Enum.with_index(1)
+      |> Enum.map_join("\n", fn {character, index} ->
+        "- source image #{index}: #{character.name}"
+      end)
 
     """
-    A photorealistic scene plate for a work of interactive fiction, shot like
-    a film still: natural light, shallow depth of field, no text or lettering
-    anywhere.
+    Compose the people from the source images into one new photorealistic
+    scene together — same faces, same builds, unmistakably these people:
 
-    The story's tone: #{story.tone}.
-    #{place}#{people}#{sources}The scene: #{scene}
+    #{people}
+
+    #{place_clause(location)}What is happening: #{scene}
+
+    Full-length framing that shows them in the place, shot like a film still:
+    natural light, no text or lettering anywhere. The story's tone: #{story.tone}.
     """
+  end
+
+  defp place_clause(nil), do: ""
+  defp place_clause(location), do: "Where: #{location.name} — #{location.description}\n"
+
+  defp cast_clause([]), do: ""
+
+  defp cast_clause(present) do
+    lines =
+      Enum.map_join(present, "\n", fn character ->
+        "- #{character.name}: #{character.appearance || character.persona}"
+      end)
+
+    "Who is in frame:\n#{lines}\n"
+  end
+
+  defp player_location(%Story{player_location_id: nil}), do: nil
+
+  defp player_location(%Story{} = story) do
+    story.id
+    |> Stories.list_locations()
+    |> Enum.find(&(&1.id == story.player_location_id))
   end
 
   defp present_characters(_story, nil), do: []

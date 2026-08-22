@@ -24,9 +24,9 @@ import Config
 #     "cognitivecomputations/dolphin-mistral-24b-venice-edition"
 config :agentic_stories, AgenticStories.LLM,
   adapter: AgenticStories.LLM.Venice,
-  weaver_model: "qwen-3-6-plus",
-  character_model: "venice-uncensored-1-2",
-  director_model: "qwen-3-6-plus"
+  weaver_model: "aion-labs-aion-3-0",
+  character_model: "aion-labs-aion-3-0-mini",
+  director_model: "aion-labs-aion-3-0"
 
 # Image provider port: paints character avatars after a story is woven.
 # Venice.ai renders photorealistic, uncensored portraits and plates
@@ -37,6 +37,13 @@ config :agentic_stories, AgenticStories.LLM,
 config :agentic_stories, AgenticStories.Imagery,
   adapter: AgenticStories.Imagery.Venice,
   enabled: true
+
+# Model names are config, not code. `:model` renders a plate from words;
+# `:edit_model` composes one around the cast's portraits, which is what puts
+# the actual characters in the picture (see Imagery.compose/2).
+config :agentic_stories, AgenticStories.Imagery.Venice,
+  model: "seedream-v4",
+  edit_model: "seedream-v4-edit"
 
 # The energy model. Ticks cost energy; the player is the only net source of
 # it. A speaking character passes chatter_energy to ONE other cast member (the
@@ -67,7 +74,16 @@ config :agentic_stories, AgenticStories.Engine,
   director_energy: 4,
   director_grant: 6,
   # A "Previously…" recap greets a player returning after this long.
-  recap_after_ms: 6 * 60 * 60 * 1000
+  recap_after_ms: 6 * 60 * 60 * 1000,
+  # The floor belongs to the player while they are writing: a tick that lands
+  # within this long after a keystroke yields instead of speaking, and a line
+  # drafted before they started typing is held back. Long enough to cover a
+  # pause mid-sentence, short enough that an abandoned draft frees the scene.
+  typing_grace_ms: 12_000,
+  # A Director illustration needs this many beats of clear air behind it. The
+  # prompt invites plates at real turning points; this is what stops a run of
+  # them (and the bill that comes with it).
+  plate_cooldown_beats: 25
 
 config :agentic_stories,
   ecto_repos: [AgenticStories.Repo],

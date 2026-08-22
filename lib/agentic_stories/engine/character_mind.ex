@@ -60,7 +60,7 @@ defmodule AgenticStories.Engine.CharacterMind do
     }
 
     with {:ok, response} <- LLM.chat(request, story_id: story.id, purpose: :tick),
-         {:ok, decision} <- parse_decision(response.text) do
+         {:ok, decision} <- parse_decision(response.text, character.name) do
       decision
     else
       _ -> :wait
@@ -133,8 +133,107 @@ defmodule AgenticStories.Engine.CharacterMind do
     |> String.trim()
   end
 
-  @spec parse_decision(String.t()) :: {:ok, decision()} | :error
-  def parse_decision(text) do
+  @doc """
+  Reads one reply as a beat. Characters write PROSE, not JSON — a small model
+  writes a markedly better line when it is telling a story than when it is
+  filling a string field — so the shape of the reply carries the kind:
+
+      (empty, or "silence")            wait
+      -> The Shore: she takes the      move
+      "..." somewhere in the prose     say — someone spoke in this beat
+      anything else                    act — a beat with nothing spoken
+
+  Beats are third-person prose either way; the quotation marks are what tell
+  a spoken beat from a silent one, and `:say` is what the collision guard and
+  the chatter torch key on. A wholly asterisked line is still read as an act:
+  it is the player's own convention and models reach for it.
+
+  Two things are stripped before any of that: the character's own name, which
+  a model will copy from the `Name: line` transcript format it has just been
+  reading, and the leading dash the reading pane draws for itself.
+
+  A reply that still arrives as a decision object is read as one. Models
+  reach for JSON out of habit, and braces spilled into the story are worse
+  than a little leniency here.
+  """
+  @spec parse_decision(String.t(), String.t() | nil) :: {:ok, decision()} | :error
+  def parse_decision(text, name \\ nil)
+
+  def parse_decision(text, name) when is_binary(text) do
+    case text |> strip_prefix(name) |> String.trim() do
+      "" -> {:ok, :wait}
+      "{" <> _rest = object -> parse_object(object)
+      prose -> {:ok, read_prose(prose)}
+    end
+  end
+
+  def parse_decision(_text, _name), do: :error
+
+  @move ~r/\A(?:->|=>|→)\s*([^:\n]+?)\s*(?::\s*(.*))?\z/s
+  @gesture ~r/\A\*+\s*(.+?)\s*\*+\z/s
+  @silence ~w(silence wait nothing none pass)
+
+  defp read_prose(text) do
+    cond do
+      String.downcase(text) in @silence ->
+        :wait
+
+      match = Regex.run(@move, text) ->
+        [destination | rest] = tl(match)
+        {:move, String.trim(destination), List.first(rest) |> blank_to_nil()}
+
+      match = Regex.run(@gesture, text) ->
+        {:act, List.last(match)}
+
+      spoken?(text) ->
+        {:say, text}
+
+      true ->
+        {:act, text}
+    end
+  end
+
+  # Quotation marks are the only signal that words were said out loud in a
+  # beat that is otherwise narration. Two marks of any flavour will do —
+  # a single stray one is punctuation, not speech.
+  defp spoken?(text) do
+    length(Regex.scan(~r/["“”«»]/u, text)) >= 2
+  end
+
+  # A model that has just read a transcript of "Maren: …" lines will write
+  # one back. It is their own beat; the name is added again downstream.
+  defp strip_prefix(text, nil), do: strip_dash(text)
+
+  defp strip_prefix(text, name) do
+    trimmed = String.trim(text)
+
+    case String.split(trimmed, ":", parts: 2) do
+      [head, rest] ->
+        if String.trim(head) |> String.downcase() == String.downcase(name),
+          do: strip_dash(rest),
+          else: strip_dash(trimmed)
+
+      _ ->
+        strip_dash(trimmed)
+    end
+  end
+
+  # the reading pane draws the dialogue dash itself
+  defp strip_dash(text) do
+    String.replace(text, ~r/\A\s*[—–]\s*/u, "")
+  end
+
+  defp blank_to_nil(nil), do: nil
+
+  defp blank_to_nil(text) do
+    case String.trim(text) do
+      "" -> nil
+      text -> text
+    end
+  end
+
+  @spec parse_object(String.t()) :: {:ok, decision()} | :error
+  defp parse_object(text) do
     case JSON.decode_object(text) do
       {:ok, %{"do" => "say", "text" => line}} when is_binary(line) and line != "" ->
         {:ok, {:say, line}}
@@ -229,7 +328,7 @@ defmodule AgenticStories.Engine.CharacterMind do
       text: """
       #{whereabouts(character, locations)}#{silence}#{addressed(character, messages, alone?)}#{pantomime(character, messages)}#{nudge_note(character)}
       It is a moment where you, #{character.name}, could speak, act, or move —
-      or let it pass. Reply with exactly one JSON object, nothing else.
+      or let it pass. Write only what you say or do, nothing else.
       """,
       cache: false
     }
@@ -329,15 +428,30 @@ defmodule AgenticStories.Engine.CharacterMind do
       Never pad; earn the length.
 
     You will be shown what you have witnessed so far, then asked what you do.
-    Reply with exactly one JSON object and nothing else:
+    Write your beat as the STORY tells it, not as yourself: third person,
+    present tense, referring to yourself by name or as she/he/they. Never
+    "I" outside of quotation marks — the player is the only "you" in this
+    story, and you are one of the people it is told about. Inside quotation
+    marks you speak in your own voice, first person, like anyone does. No
+    name label in front, no asterisks around it:
 
-    {"do": "say", "text": "what you say, in your voice"}
-    {"do": "act", "text": "what you physically do, third person, no name prefix"}
-    {"do": "move", "to": "the exact name of a place", "text": "how you leave, third person, no name prefix"}
-    {"do": "wait"}
+        She takes the beer but doesn't open it yet, holding it against her
+        thigh. "I'm looking for something I haven't found yet. That's the
+        truth. What about you?"
 
-    Choose "wait" unless you have something that genuinely moves the scene.
-    Do not repeat yourself or restate what was just said.
+    A beat with nothing in quotation marks is simply something you do, told
+    the same way. Two other things you can write instead:
+
+    - To go somewhere else, start the line with an arrow and the exact name
+      of the place: -> The Shore: she takes the stairs two at a time
+    - To stay quiet, write the single word: silence
+
+    Stay quiet unless you have something that genuinely moves the scene.
+
+    The scene remembers. Never re-describe where you are standing, what you
+    are holding, what you are wearing, or what your face is doing when an
+    earlier beat already showed it — least of all your own last beat. Start
+    from what is already true and add something that was not there before.
     """
   end
 

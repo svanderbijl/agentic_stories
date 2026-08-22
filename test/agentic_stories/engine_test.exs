@@ -267,8 +267,10 @@ defmodule AgenticStories.EngineTest do
 
       expect(AgenticStories.Imagery.Mock, :compose, fn prompt, references ->
         assert prompt =~ "The Shore — Wet shingle."
-        assert prompt =~ "Old Tosk: Weathered, salt-white beard"
-        assert prompt =~ "portraits of the characters present"
+        # the cast is named in the order their portraits were sent, so the
+        # edit model can tell which source image is whom
+        assert prompt =~ "source image 1: Old Tosk"
+        assert prompt =~ "same faces"
         assert [%{binary: <<255, 216, 255>>, content_type: "image/jpeg"}] = references
         {:ok, %{binary: <<1, 2, 3>>, content_type: "image/jpeg"}}
       end)
@@ -314,6 +316,90 @@ defmodule AgenticStories.EngineTest do
                      1_000
 
       {:ok, _story} = Engine.player_move(story, ctx.shore.id)
+      refute_receive {:message_created, %Message{kind: :illustration}}, 100
+    end
+
+    test "the player can ask for a picture; the Narrator reads the scene back first", ctx do
+      character_fixture(ctx.story, %{name: "Maren", location_id: ctx.lamp_room.id})
+
+      # written straight to the log: player_message/2 would also spawn the
+      # implied-move read, and that would race this test for the mock
+      {:ok, _} =
+        Stories.create_message(ctx.story, %{
+          kind: :player,
+          content: "I take off my coat.",
+          location_id: ctx.lamp_room.id
+        })
+
+      expect(AgenticStories.LLM.Mock, :chat, fn request ->
+        # the read-back gets the record, not just the cast list, and it is
+        # asked for prose — not JSON a small model will mangle
+        assert request.system =~ "WEARING"
+        refute request.system =~ "JSON"
+        assert hd(request.messages).content =~ "I take off my coat."
+        assert hd(request.messages).content =~ "Maren"
+
+        {:ok,
+         %AgenticStories.LLM.Response{
+           text: "CAPTION: Unbuttoned\nMaren by the window, coat over the chair."
+         }}
+      end)
+
+      expect(AgenticStories.Imagery.Mock, :generate, fn prompt ->
+        assert prompt =~ "coat over the chair"
+        {:ok, %{binary: <<3>>, content_type: "image/jpeg"}}
+      end)
+
+      assert :ok = Engine.request_plate(ctx.story)
+
+      assert_receive {:message_created, %Message{kind: :illustration, content: "Unbuttoned"}},
+                     1_000
+    end
+
+    test "a failed read-back costs the player a picture, not the story", ctx do
+      test_pid = self()
+
+      expect(AgenticStories.LLM.Mock, :chat, fn _request ->
+        send(test_pid, :read_back_attempted)
+        {:error, :rate_limited}
+      end)
+
+      assert :ok = Engine.request_plate(ctx.story)
+
+      assert_receive :read_back_attempted, 1_000
+      refute_receive {:message_created, %Message{kind: :illustration}}, 100
+    end
+
+    test "a finished story cannot be pictured", ctx do
+      {:ok, story} = Stories.finish_story(ctx.story)
+      assert :ok = Engine.request_plate(story)
+      refute_receive {:message_created, %Message{kind: :illustration}}, 100
+    end
+
+    test "an ending earns a closing plate", ctx do
+      stub(AgenticStories.Imagery.Mock, :generate, fn prompt ->
+        assert prompt =~ "the lamp goes out"
+        {:ok, %{binary: <<7>>, content_type: "image/jpeg"}}
+      end)
+
+      {:ok, _story} = Engine.finish_story(ctx.story, "And so the lamp goes out.")
+
+      assert_receive {:message_created, %Message{kind: :illustration, content: "The end"}}, 1_000
+    end
+
+    test "the Director may illustrate a turn, but not two in a row", ctx do
+      stub(AgenticStories.Imagery.Mock, :generate, fn _prompt ->
+        {:ok, %{binary: <<7>>, content_type: "image/jpeg"}}
+      end)
+
+      locations = Stories.list_locations(ctx.story.id)
+      direction = {:illustrate, "She turns from the rail.", "The turn"}
+
+      Engine.apply_direction(ctx.story, direction, [], locations)
+      assert_receive {:message_created, %Message{kind: :illustration, content: "The turn"}}, 1_000
+
+      # the cooldown is beats of clear air, and none have passed
+      Engine.apply_direction(ctx.story, direction, [], locations)
       refute_receive {:message_created, %Message{kind: :illustration}}, 100
     end
   end

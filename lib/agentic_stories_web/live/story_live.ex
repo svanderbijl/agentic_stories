@@ -9,6 +9,7 @@ defmodule AgenticStoriesWeb.StoryLive do
 
   alias AgenticStories.Engine
   alias AgenticStories.Engine.Narrator
+  alias AgenticStories.Imagery
   alias AgenticStories.LLM.Ledger
   alias AgenticStories.Stories
   alias AgenticStories.Stories.{Character, Location, Message, Story}
@@ -27,7 +28,13 @@ defmodule AgenticStoriesWeb.StoryLive do
     socket =
       socket
       |> assign_story(story)
-      |> assign(max_energy: Engine.config(:max_energy), thinking: MapSet.new(), recap: nil)
+      |> assign(
+        max_energy: Engine.config(:max_energy),
+        thinking: MapSet.new(),
+        recap: nil,
+        painting: false,
+        can_paint?: Imagery.enabled?()
+      )
       |> stream(:beats, beats)
 
     socket = if connected?(socket), do: maybe_start_recap(socket, story, beats), else: socket
@@ -43,6 +50,27 @@ defmodule AgenticStoriesWeb.StoryLive do
     else
       _ -> {:noreply, socket}
     end
+  end
+
+  def handle_event("picture", _params, socket) do
+    with %Story{status: :live} = story <- socket.assigns.story do
+      Engine.request_plate(story)
+    end
+
+    # cleared when the plate lands (or when the story moves on without one)
+    {:noreply, assign(socket, painting: true)}
+  end
+
+  # Keystrokes hold the floor: while there is a draft in the composer the
+  # cast waits instead of talking over the player. Emptying it lets them go.
+  def handle_event("typing", %{"content" => content}, socket) do
+    with %Story{} = story <- socket.assigns.story do
+      if String.trim(content) == "",
+        do: Engine.player_stopped_typing(story),
+        else: Engine.player_typing(story)
+    end
+
+    {:noreply, socket}
   end
 
   def handle_event("go", %{"id" => id}, socket) do
@@ -85,6 +113,10 @@ defmodule AgenticStoriesWeb.StoryLive do
   # elsewhere in the world stay unseen.
   def handle_info({:message_created, %Message{witnessed_by_player: false}}, socket) do
     {:noreply, socket}
+  end
+
+  def handle_info({:message_created, %Message{kind: :illustration} = message}, socket) do
+    {:noreply, socket |> assign(painting: false) |> stream_insert(:beats, message)}
   end
 
   def handle_info({:message_created, %Message{} = message}, socket) do
@@ -177,6 +209,8 @@ defmodule AgenticStoriesWeb.StoryLive do
         thinking={@thinking}
         recap={@recap}
         tokens={@tokens}
+        painting={@painting}
+        can_paint?={@can_paint?}
       />
     </Layouts.app>
     """
@@ -190,6 +224,8 @@ defmodule AgenticStoriesWeb.StoryLive do
   attr :thinking, :any, required: true
   attr :recap, :string, default: nil
   attr :tokens, :map, default: nil
+  attr :painting, :boolean, default: false
+  attr :can_paint?, :boolean, default: false
 
   defp scene(assigns) do
     ~H"""
@@ -309,7 +345,13 @@ defmodule AgenticStoriesWeb.StoryLive do
         </script>
 
         <footer :if={@story.status == :live} class="shrink-0 px-5 pt-1 pb-4 sm:px-8">
-          <form id="composer-form" phx-submit="send" class="mx-auto max-w-2xl">
+          <form
+            id="composer-form"
+            phx-submit="send"
+            phx-change="typing"
+            phx-throttle="1000"
+            class="mx-auto max-w-2xl"
+          >
             <div class={[
               "rounded-2xl border border-edge bg-paper-raised shadow-sm transition-all",
               "focus-within:border-ember/50 focus-within:shadow-[0_0_0_3px_var(--as-ember-soft)]"
@@ -325,13 +367,34 @@ defmodule AgenticStoriesWeb.StoryLive do
                 <span class="font-mono text-[10px] tracking-wide text-ink-faint/80 select-none">
                   Enter to send &middot; Shift+Enter for a new line &middot; *asterisks* to act
                 </span>
-                <button
-                  type="submit"
-                  aria-label="Send"
-                  class="grid size-8 cursor-pointer place-items-center rounded-full bg-ember text-paper transition hover:brightness-110 active:scale-95"
-                >
-                  <.icon name="hero-arrow-up-micro" class="size-4" />
-                </button>
+                <div class="flex items-center gap-2">
+                  <button
+                    :if={@can_paint?}
+                    type="button"
+                    phx-click="picture"
+                    disabled={@painting}
+                    title="Read the scene back and paint what is here"
+                    class={[
+                      "flex cursor-pointer items-center gap-1.5 rounded-full border border-edge px-2.5 py-1",
+                      "font-mono text-[10px] tracking-wide text-ink-faint transition",
+                      "hover:border-ember/50 hover:text-ink",
+                      "disabled:cursor-wait disabled:opacity-60"
+                    ]}
+                  >
+                    <.icon
+                      name={if @painting, do: "hero-sparkles-micro", else: "hero-camera-micro"}
+                      class={["size-3.5", @painting && "animate-pulse"]}
+                    />
+                    {if @painting, do: "Painting…", else: "Picture this"}
+                  </button>
+                  <button
+                    type="submit"
+                    aria-label="Send"
+                    class="grid size-8 cursor-pointer place-items-center rounded-full bg-ember text-paper transition hover:brightness-110 active:scale-95"
+                  >
+                    <.icon name="hero-arrow-up-micro" class="size-4" />
+                  </button>
+                </div>
               </div>
             </div>
           </form>

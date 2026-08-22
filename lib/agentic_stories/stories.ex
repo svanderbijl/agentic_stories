@@ -533,6 +533,32 @@ defmodule AgenticStories.Stories do
     )
   end
 
+  @doc """
+  How many beats have landed since the last plate — the cooldown that keeps
+  the Director from illustrating a story to death. A story that has never
+  been illustrated is unbounded (`:infinity`), so the first plate is free.
+  """
+  def beats_since_plate(story_id) do
+    last =
+      Repo.one(
+        from m in Message,
+          where: m.story_id == ^story_id and m.kind == :illustration,
+          select: max(m.id)
+      )
+
+    case last do
+      nil ->
+        :infinity
+
+      last ->
+        Repo.one(
+          from m in Message,
+            where: m.story_id == ^story_id and m.id > ^last,
+            select: count(m.id)
+        )
+    end
+  end
+
   @doc "The plate image for an illustration beat, or nil."
   def get_illustration(message_id) do
     Repo.one(

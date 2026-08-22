@@ -116,7 +116,7 @@ defmodule AgenticStories.Engine.DirectorMind do
     {"do": "narrate", "text": "one short paragraph of narration in the story's style", "location": "the exact name of the place it happens (omit for something felt everywhere)"}
     {"do": "nudge", "character": "exact name", "note": "a private impulse, in second person, that gives them a dramatic reason to act now"}
     {"do": "reveal", "name": "a new place's short name", "description": "what it is like to stand there"}
-    {"do": "illustrate", "prompt": "a vivid visual description of the current scene for an illustrator", "caption": "a short caption in the story's voice"}
+    {"do": "illustrate", "prompt": "who is in frame and what they are doing, in vivid concrete visual detail, for an illustrator", "caption": "a short caption in the story's voice"}
     {"do": "conclude", "text": "two or three closing paragraphs that resolve the arc, addressed to 'you'"}
     {"do": "wait"}
 
@@ -131,7 +131,11 @@ defmodule AgenticStories.Engine.DirectorMind do
       motion, questions without answers — is a scene to push: nudge someone
       toward the next step of THEIR story.
     - "reveal" a place only when the story has knocked on its door.
-    - "illustrate" at most once in a great while, only for a genuinely striking moment.
+    - "illustrate" when the story TURNS — a revelation, an arrival, a rupture, a
+      first meeting, a moment the player will remember. Describe the people in
+      the frame and what their bodies are doing; a plate of empty scenery is a
+      wasted one. Plates are rate-limited outside your view, so ask whenever a
+      moment has genuinely earned a picture and let the limit do the refusing.
     - "conclude" only when the arc has truly resolved and the scene is quiet.
       Ending a story is irreversible.
     - Never speak for a character and never address the player directly outside narration.

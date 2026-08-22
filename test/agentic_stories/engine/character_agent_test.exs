@@ -6,6 +6,7 @@ defmodule AgenticStories.Engine.CharacterAgentTest do
   import AgenticStories.StoriesFixtures
   import Mox
 
+  alias AgenticStories.Engine
   alias AgenticStories.Engine.CharacterAgent
   alias AgenticStories.LLM
   alias AgenticStories.LLM.Response
@@ -31,19 +32,54 @@ defmodule AgenticStories.Engine.CharacterAgentTest do
 
   test "a tick spends energy and records the character's line", ctx do
     expect(LLM.Mock, :chat, fn _request ->
-      {:ok, %Response{text: ~s({"do": "say", "text": "Only me."})}}
+      {:ok, %Response{text: ~s(\"Only me.\")}}
     end)
 
     pid = start_agent(ctx.story, ctx.character)
     send(pid, :tick)
 
-    assert_receive {:message_created, %Message{kind: :say, content: "Only me."}}, 1_000
+    assert_receive {:message_created, %Message{kind: :say, content: ~s(\"Only me.\")}}, 1_000
     assert %{energy: 0, dormant?: false} = :sys.get_state(pid)
     assert Stories.get_character!(ctx.character.id).energy == 0
   end
 
+  test "a tick lands mid-sentence: the floor stays the player's, and nothing is spent", ctx do
+    Engine.player_typing(ctx.story)
+
+    pid = start_agent(ctx.story, ctx.character)
+    send(pid, :tick)
+
+    # no LLM call at all — verify_on_exit! would flag an unexpected one
+    assert %{energy: 2, dormant?: false} = :sys.get_state(pid)
+    refute_receive {:message_created, _message}, 50
+
+    # once the draft is sent, the same tick goes through
+    Engine.player_stopped_typing(ctx.story)
+
+    expect(LLM.Mock, :chat, fn _request ->
+      {:ok, %Response{text: ~s(\"You were saying?\")}}
+    end)
+
+    send(pid, :tick)
+    assert_receive {:message_created, %Message{content: ~s(\"You were saying?\")}}, 1_000
+  end
+
+  test "a line drafted before the player started typing is held, not spoken over", ctx do
+    expect(LLM.Mock, :chat, fn _request ->
+      # the player starts typing while this character is still thinking
+      Engine.player_typing(ctx.story)
+      {:ok, %Response{text: ~s(\"Interrupting.\")}}
+    end)
+
+    pid = start_agent(ctx.story, ctx.character)
+    send(pid, :tick)
+
+    assert %{energy: 0} = :sys.get_state(pid)
+    refute_receive {:message_created, _message}, 50
+  end
+
   test "a wait decision spends energy but records nothing", ctx do
-    expect(LLM.Mock, :chat, fn _request -> {:ok, %Response{text: ~s({"do": "wait"})}} end)
+    expect(LLM.Mock, :chat, fn _request -> {:ok, %Response{text: "silence"}} end)
 
     pid = start_agent(ctx.story, ctx.character)
     send(pid, :tick)
@@ -146,9 +182,9 @@ defmodule AgenticStories.Engine.CharacterAgentTest do
 
     expect(LLM.Mock, :chat, 2, fn request ->
       if request.system =~ "journal" do
-        {:ok, %Response{text: "I remember the first two beats."}}
+        {:ok, %Response{text: ~s(\"I remember the first two beats.\")}}
       else
-        {:ok, %Response{text: ~s({"do": "wait"})}}
+        {:ok, %Response{text: "silence"}}
       end
     end)
 
@@ -157,7 +193,7 @@ defmodule AgenticStories.Engine.CharacterAgentTest do
 
     assert %{character: %{memory_beats: 2}} = :sys.get_state(pid)
 
-    assert [%{content: "I remember the first two beats."}] =
+    assert [%{content: ~s(\"I remember the first two beats.\")}] =
              Stories.list_memories(ctx.character)
   end
 
@@ -169,7 +205,7 @@ defmodule AgenticStories.Engine.CharacterAgentTest do
       {:ok, _} =
         Stories.create_message(story, %{kind: :player, content: "Wait — one more thing."})
 
-      {:ok, %Response{text: ~s({"do": "say", "text": "How quiet it is."})}}
+      {:ok, %Response{text: ~s(\"How quiet it is.\")}}
     end)
 
     pid = start_agent(ctx.story, ctx.character)
@@ -177,9 +213,38 @@ defmodule AgenticStories.Engine.CharacterAgentTest do
 
     %{tick_timer: timer} = :sys.get_state(pid)
     contents = story.id |> Stories.list_messages() |> Enum.map(& &1.content)
-    refute "How quiet it is." in contents
+    refute ~s(\"How quiet it is.\") in contents
     # held lines retry at the wake delay, not the full cadence
     assert Process.read_timer(timer) < 15_000
+  end
+
+  test "a character never follows their own last word", ctx do
+    character = struct!(ctx.character, energy: 6)
+
+    expect(LLM.Mock, :chat, 2, fn _request ->
+      {:ok, %Response{text: ~s(\"Only me.\")}}
+    end)
+
+    pid = start_agent(ctx.story, character)
+
+    send(pid, :tick)
+    assert_receive {:message_created, %Message{kind: :say}}, 1_000
+
+    # energy for a second beat, and something to say — but the last thing
+    # said was their own, so the floor goes back to the room
+    send(pid, :tick)
+    :sys.get_state(pid)
+    refute_receive {:message_created, %Message{kind: :say}}, 50
+
+    # once anyone else speaks, they may follow again
+    {:ok, _} = Stories.create_message(ctx.story, %{kind: :player, content: "Still here?"})
+
+    expect(LLM.Mock, :chat, fn _request ->
+      {:ok, %Response{text: ~s(\"Still here.\")}}
+    end)
+
+    send(pid, :tick)
+    assert_receive {:message_created, %Message{content: ~s(\"Still here.\")}}, 1_000
   end
 
   test "background acts and narration never cancel a drafted line", ctx do
@@ -196,7 +261,7 @@ defmodule AgenticStories.Engine.CharacterAgentTest do
         })
 
       {:ok, _} = Stories.create_message(story, %{kind: :narration, content: "The music dips."})
-      {:ok, %Response{text: ~s({"do": "say", "text": "Only me."})}}
+      {:ok, %Response{text: ~s(\"Only me.\")}}
     end)
 
     pid = start_agent(ctx.story, ctx.character)
@@ -204,14 +269,14 @@ defmodule AgenticStories.Engine.CharacterAgentTest do
     :sys.get_state(pid)
 
     contents = story.id |> Stories.list_messages() |> Enum.map(& &1.content)
-    assert "Only me." in contents
+    assert ~s(\"Only me.\") in contents
   end
 
   test "an addressed character who tries to wait is made to try again soon", ctx do
     # alone with the player, and the player's beat is the newest thing seen
     message_fixture(ctx.story, %{kind: :player, content: "Well? Say something."})
 
-    expect(LLM.Mock, :chat, fn _request -> {:ok, %Response{text: ~s({"do": "wait"})}} end)
+    expect(LLM.Mock, :chat, fn _request -> {:ok, %Response{text: "silence"}} end)
 
     pid = start_agent(ctx.story, ctx.character)
     send(pid, :tick)
@@ -224,7 +289,7 @@ defmodule AgenticStories.Engine.CharacterAgentTest do
   test "an unaddressed wait keeps the normal cadence", ctx do
     message_fixture(ctx.story, %{kind: :narration, content: "The tide pulls back."})
 
-    expect(LLM.Mock, :chat, fn _request -> {:ok, %Response{text: ~s({"do": "wait"})}} end)
+    expect(LLM.Mock, :chat, fn _request -> {:ok, %Response{text: "silence"}} end)
 
     pid = start_agent(ctx.story, ctx.character)
     send(pid, :tick)
@@ -248,12 +313,12 @@ defmodule AgenticStories.Engine.CharacterAgentTest do
   test "a repeated line is held back", ctx do
     message_fixture(ctx.story, %{
       kind: :say,
-      content: "Only me.",
+      content: ~s(\"Only me.\"),
       character_id: ctx.character.id
     })
 
     expect(LLM.Mock, :chat, fn _request ->
-      {:ok, %Response{text: ~s({"do": "say", "text": "Only me."})}}
+      {:ok, %Response{text: ~s(\"Only me.\")}}
     end)
 
     pid = start_agent(ctx.story, ctx.character)
@@ -265,7 +330,7 @@ defmodule AgenticStories.Engine.CharacterAgentTest do
   end
 
   test "thinking is signalled around the decision", ctx do
-    expect(LLM.Mock, :chat, fn _request -> {:ok, %Response{text: ~s({"do": "wait"})}} end)
+    expect(LLM.Mock, :chat, fn _request -> {:ok, %Response{text: "silence"}} end)
 
     pid = start_agent(ctx.story, ctx.character)
     send(pid, :tick)

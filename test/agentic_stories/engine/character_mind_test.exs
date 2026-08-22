@@ -59,9 +59,9 @@ defmodule AgenticStories.Engine.CharacterMindTest do
         %Message{id: 2, kind: :say, content: "The wind, probably.", character: maren}
       ]
 
-      capture_request(~s({"do": "say", "text": "Only me."}))
+      capture_request(~s(She lifts the lamp. "Only me."))
 
-      assert {:say, "Only me."} =
+      assert {:say, ~s(She lifts the lamp. "Only me.")} =
                CharacterMind.decide(story(), character(), [], messages, locations())
 
       assert_received {:request, request}
@@ -71,8 +71,12 @@ defmodule AgenticStories.Engine.CharacterMindTest do
       assert request.system =~ "You are Maren"
       assert request.system =~ "The keeper's sister."
       assert request.system =~ "The Lamp Room: Hot brass."
-      assert request.system =~ ~s({"do": "move")
-      assert request.system =~ ~s({"do": "wait"})
+      assert request.system =~ "-> The Shore: she takes the stairs"
+      assert request.system =~ "write the single word: silence"
+      # the story is told about them, not by them
+      assert request.system =~ "third person"
+      # the tick asks for prose, never for JSON
+      refute request.system =~ ~s({"do":)
 
       # the transcript rides as one block per beat, breakpoint on the last
       # beat, with only the volatile instruction after it
@@ -101,7 +105,7 @@ defmodule AgenticStories.Engine.CharacterMindTest do
 
       messages = [%Message{id: 1, kind: :say, content: "Storm's coming.", character: character()}]
 
-      capture_request(~s({"do": "wait"}))
+      capture_request("silence")
       assert :wait = CharacterMind.decide(story(), minded, [], messages, locations())
 
       assert_received {:request, request}
@@ -118,7 +122,7 @@ defmodule AgenticStories.Engine.CharacterMindTest do
     test "a directly addressed character is told silence is not an option" do
       messages = [%Message{id: 1, kind: :player, content: "Maren, what is it?", character: nil}]
 
-      capture_request(~s({"do": "wait"}))
+      capture_request("silence")
       assert :wait = CharacterMind.decide(story(), character(), [], messages, locations())
 
       assert_received {:request, request}
@@ -132,7 +136,7 @@ defmodule AgenticStories.Engine.CharacterMindTest do
       # no name mentioned — but nobody else is in the room
       messages = [%Message{id: 1, kind: :player, content: "So. Tell me.", character: nil}]
 
-      capture_request(~s({"do": "wait"}))
+      capture_request("silence")
 
       assert :wait =
                CharacterMind.decide(story(), character(), [], messages, locations(),
@@ -152,7 +156,7 @@ defmodule AgenticStories.Engine.CharacterMindTest do
 
       messages = [%Message{id: 9, kind: :player, content: "Still here?", character: nil}]
 
-      capture_request(~s({"do": "wait"}))
+      capture_request("silence")
       assert :wait = CharacterMind.decide(story(), character(), memories, messages, locations())
 
       assert_received {:request, request}
@@ -178,8 +182,18 @@ defmodule AgenticStories.Engine.CharacterMindTest do
       assert :wait = CharacterMind.decide(story(), character(), [], [], locations())
     end
 
-    test "collapses malformed output to :wait" do
+    test "an empty reply is a wait; any other prose is simply their line" do
+      expect(LLM.Mock, :chat, fn _request -> {:ok, %Response{text: "   "}} end)
+      assert :wait = CharacterMind.decide(story(), character(), [], [], locations())
+
       expect(LLM.Mock, :chat, fn _request -> {:ok, %Response{text: "hmm, tricky"}} end)
+
+      assert {:act, "hmm, tricky"} =
+               CharacterMind.decide(story(), character(), [], [], locations())
+    end
+
+    test "a half-formed decision object never spills braces into the story" do
+      expect(LLM.Mock, :chat, fn _request -> {:ok, %Response{text: ~s({"do": "shout"})}} end)
       assert :wait = CharacterMind.decide(story(), character(), [], [], locations())
     end
 
@@ -237,8 +251,63 @@ defmodule AgenticStories.Engine.CharacterMindTest do
     end
   end
 
-  describe "parse_decision/1" do
-    test "parses say, act, and wait" do
+  describe "parse_decision/2" do
+    test "quoted speech inside the prose makes it a spoken beat" do
+      spoken = ~s(She takes the beer but doesn't open it. "I'm looking for something.")
+
+      assert {:ok, {:say, ^spoken}} = CharacterMind.parse_decision(spoken)
+
+      # typographic quotes count too
+      assert {:ok, {:say, _}} =
+               CharacterMind.parse_decision("She sets it down. \u201CSuit yourself.\u201D")
+
+      # models keep the transcript's own shape; it is their beat either way
+      assert {:ok, {:say, ^spoken}} =
+               CharacterMind.parse_decision("Maren: " <> spoken, "Maren")
+
+      # the reading pane draws its own dialogue dash
+      assert {:ok, {:say, ^spoken}} = CharacterMind.parse_decision("— " <> spoken, "Maren")
+
+      # a colon that is part of the beat survives
+      assert {:ok, {:say, ~s(She turns. "Listen: I told you already.")}} =
+               CharacterMind.parse_decision(~s(She turns. "Listen: I told you already."), "Maren")
+    end
+
+    test "prose with nothing spoken is an act" do
+      assert {:ok, {:act, "She picks up the rope and coils it."}} =
+               CharacterMind.parse_decision("She picks up the rope and coils it.")
+
+      # a single stray mark is punctuation, not speech
+      assert {:ok, {:act, ~s(She measures it at 6" and frowns.)}} =
+               CharacterMind.parse_decision(~s(She measures it at 6" and frowns.))
+    end
+
+    test "a wholly asterisked line is still an act" do
+      assert {:ok, {:act, "picks up the rope"}} =
+               CharacterMind.parse_decision("*picks up the rope*")
+
+      assert {:ok, {:act, "picks up the rope"}} =
+               CharacterMind.parse_decision("Maren: *picks up the rope*", "Maren")
+    end
+
+    test "an arrow line is a move" do
+      assert {:ok, {:move, "The Shore", "heads down the stairs"}} =
+               CharacterMind.parse_decision("-> The Shore: heads down the stairs")
+
+      assert {:ok, {:move, "The Shore", "heads down"}} =
+               CharacterMind.parse_decision("→ The Shore: heads down")
+
+      assert {:ok, {:move, "The Shore", nil}} = CharacterMind.parse_decision("-> The Shore")
+    end
+
+    test "silence and an empty reply are both a wait" do
+      assert {:ok, :wait} = CharacterMind.parse_decision("silence")
+      assert {:ok, :wait} = CharacterMind.parse_decision("Silence")
+      assert {:ok, :wait} = CharacterMind.parse_decision("   ")
+      assert {:ok, :wait} = CharacterMind.parse_decision("Maren:", "Maren")
+    end
+
+    test "a model that reaches for JSON anyway is still understood" do
       assert {:ok, {:say, "Hello."}} =
                CharacterMind.parse_decision(~s({"do": "say", "text": "Hello."}))
 
@@ -252,14 +321,9 @@ defmodule AgenticStories.Engine.CharacterMindTest do
                  ~s({"do": "move", "to": "The Shore", "text": "heads down the stairs"})
                )
 
-      assert {:ok, {:move, "The Shore", nil}} =
-               CharacterMind.parse_decision(~s({"do": "move", "to": "The Shore"}))
-    end
-
-    test "rejects empty text and unknown actions" do
-      assert :error = CharacterMind.parse_decision(~s({"do": "say", "text": ""}))
+      # braces are never allowed to spill into the story
       assert :error = CharacterMind.parse_decision(~s({"do": "shout"}))
-      assert :error = CharacterMind.parse_decision("silence")
+      assert :error = CharacterMind.parse_decision(~s({"do": "say", "text": ""}))
     end
   end
 

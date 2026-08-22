@@ -56,6 +56,10 @@ Three boundaries. Keep them clean:
 - `AgenticStories.Engine.Narrator` — residue (arrival traces of missed beats, watermark
   advances via the residue beat itself) and "Previously…" recaps (ephemeral assign,
   never a message).
+- `AgenticStories.Engine.Presence` — an ETS table of "the player is writing", per story.
+  The composer stamps it on `phx-change` (throttled); `CharacterAgent` and
+  `DirectorAgent` read it before they take a turn. Deliberately process-free: a tick
+  must never block on a process that is itself blocked on an LLM call.
 - `AgenticStories.Imagery` — the image provider port (same pattern). `Imagery.Venice`
   is the default driver: photorealistic, uncensored renders via Venice's
   `POST /v1/image/generate` (base64 JSON, `safe_mode` forced off) and
@@ -65,6 +69,24 @@ Three boundaries. Keep them clean:
   portraits after weaving, best-effort: failures log and leave the character on the
   initial-letter fallback. Gated by `Imagery.enabled?/0` (off in tests).
 
+  Plates mark the story's turning points: the opening scene, a place's first arrival
+  (one per location, ever — `Stories.plate_at?/2`), a Director `illustrate`, the ending,
+  and `Engine.request_plate/1` — the player's own "Picture this" button, the only plate
+  whose scene is not supplied by its caller: `Narrator.tableau/4` reads the record back
+  for who is present, how they stand, and what they are wearing *by now* (the Director's
+  cooldown does not apply — the player asked). The Director's prompt invites plates at real turns; the rate limit is
+  code-side (`plate_cooldown_beats` vs `Stories.beats_since_plate/1`), because a model
+  cannot count beats and asking it to only costs tokens.
+
+  **Getting the cast INTO the plate is the whole point of `compose/2`.** Present
+  characters' portraits ride along as reference images and the prompt names them in the
+  order the images were sent (the edit endpoint treats image 1 as the base). Two things
+  break this silently, so watch them: `safe_mode` defaults to *true* on Venice's
+  multi-edit endpoint (the driver forces it off on both endpoints), and a wrong
+  `:edit_model` id makes every composition 4xx. Falling back to a text-only render is
+  deliberate, but it **logs why** — a silent fallback is how "the plates never have
+  anyone in them" hides for weeks.
+
 Rules that keep this honest:
 
 - **Nothing outside a driver module makes HTTP calls to a provider.** New providers =
@@ -73,9 +95,22 @@ Rules that keep this honest:
   directly. The facade dispatches to the configured adapter.
 - Prompt building and response parsing are pure functions (`Engine.CharacterMind`,
   `Engine.Weaver` blueprint parsing, `LLM.JSON`) so they're testable without processes.
-- LLM responses are asked to be JSON and parsed leniently via `AgenticStories.LLM.JSON`
-  (strips code fences, extracts the outermost object). Treat parse failures as "the
-  character stays quiet" / "weaving failed" — never crash the story over bad JSON.
+- **Characters write prose; everything else writes JSON.** A character's tick reply is
+  their beat as the story would tell it — **third person, present tense, dialogue in
+  quotation marks**. The player is the only "you"; a character never writes "I" outside
+  quotes. `CharacterMind.parse_decision/2` reads the shape: `-> Place: text` is a move,
+  `silence` (or an empty reply) is a wait, quoted speech anywhere in the prose makes it
+  a `:say`, and prose with nothing spoken is an `:act`. It also strips the character's
+  own `Name:` prefix (models copy the transcript format they were just reading) and the
+  leading dash the reading pane used to draw. A reply that arrives as a decision object
+  is still parsed as one, so a model reaching for JSON out of habit never spills braces
+  into the story. Do NOT put characters back on JSON, and do NOT ask them for a line in
+  their own voice: first person from every character at once stops reading like a story,
+  and a small model writes worse prose filling a string field than telling a tale.
+- The Weaver, the Director, and the Narrator's tableau DO use JSON — they are structural,
+  not voiced. Those responses are parsed leniently via `AgenticStories.LLM.JSON` (strips
+  code fences, extracts the outermost object). Treat parse failures as "the character
+  stays quiet" / "weaving failed" — never crash the story over bad JSON.
 
 ## Witnessing (locations & per-character memory)
 
@@ -106,6 +141,12 @@ Rules that keep this honest:
   co-located character when one speaks (the torch, next in cast order), `max_energy` cap,
   `initial_energy` funds exactly one reaction to the opening, `idle_timeout_ms` retires
   agents after player silence.
+- **The floor belongs to the player while they type.** `typing_grace_ms` after the last
+  keystroke, a tick that lands yields instead of speaking — costing no energy and no LLM
+  call — and a line drafted before the player started typing is held by `verdict/3` as a
+  collision. `Engine.player_message/2` drops the hold, so an answer is never delayed by
+  the draft that provoked it. Emptying the composer drops it too; the grace window means
+  an abandoned draft can never freeze a story.
 - **Invariant: `chatter_energy < tick_cost`.** The player is the only net energy source;
   every tick strictly drains the cast, so scenes decay to silence at any cast size.
   Granting chatter to more listeners (or ≥ tick_cost) makes a perpetual-motion cast.
@@ -171,12 +212,18 @@ Write the failing test first; tests describe behaviour, not implementation.
   key frays the story with a clear reason; portraits/plates without one just log.
 - **Agendas are secret.** `character.agenda` goes into CharacterMind/DirectorMind
   prompts and NOWHERE in the UI or reader page. Grep templates before shipping changes.
-- Post-decision guards live in `CharacterAgent.verdict/3`: a collision (only
-  **dialogue** — a player beat or another character's say — landed while thinking,
-  via `Stories.witnessed_after/2`) holds the line and retries at the wake delay;
-  repetition (`CharacterMind.repetitive?/3`, Jaro vs their own recent lines) drops
-  it. Background acts/narration must NEVER cancel speech — that starves talkers in
-  busy rooms (the Dez-and-Mara livelock). Keep guards code-side, not prompt-side.
+- Post-decision guards live in `CharacterAgent.verdict/3`: a collision (the player is
+  typing, or **dialogue** — a player beat or another character's say — landed while
+  thinking, via `Stories.witnessed_after/2`) holds the line and retries at the wake
+  delay; repetition (`CharacterMind.repetitive?/3`, Jaro vs their own recent lines) and
+  monologue (the newest beat they witnessed is their own say/act) drop it. Background
+  acts/narration must NEVER cancel speech — that starves talkers in busy rooms (the
+  Dez-and-Mara livelock). Keep guards code-side, not prompt-side.
+- **One beat per character, per turn of the room.** A player message funds three ticks,
+  so without the monologue guard a character says its piece three times running, which
+  reads as one person talking to themselves. They may follow the player, another
+  character, or the Director — never their own last word. Moves are exempt (they go
+  through `move/4`, not `attempt/5`), so walking out on your own line still works.
 - Agents trap exits so `terminate/2` always clears the thinking quill; the
   `{:EXIT, _, reason}` handle_info clause is what keeps `Process.exit(pid,
   :shutdown)` retirement working under trap_exit — don't remove either half.

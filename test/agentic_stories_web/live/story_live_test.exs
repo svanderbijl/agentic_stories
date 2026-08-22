@@ -5,6 +5,7 @@ defmodule AgenticStoriesWeb.StoryLiveTest do
   import AgenticStories.StoriesFixtures
   import Phoenix.LiveViewTest
 
+  alias AgenticStories.Engine.Presence
   alias AgenticStories.Stories
 
   describe "a weaving story" do
@@ -96,6 +97,36 @@ defmodule AgenticStoriesWeb.StoryLiveTest do
 
       assert [%{kind: :player, content: "Hello? Anyone there?"}] =
                Stories.list_messages(ctx.story.id) |> Enum.filter(&(&1.kind == :player))
+    end
+
+    test "typing in the composer holds the floor until the beat is sent", ctx do
+      refute Presence.typing?(ctx.story.id)
+
+      ctx.view
+      |> form("#composer-form", %{"content" => "Hold on, I am wri"})
+      |> render_change()
+
+      assert Presence.typing?(ctx.story.id)
+
+      ctx.view
+      |> form("#composer-form", %{"content" => "Hold on, I am writing."})
+      |> render_submit()
+
+      refute Presence.typing?(ctx.story.id)
+    end
+
+    test "emptying the composer gives the floor back", ctx do
+      ctx.view
+      |> form("#composer-form", %{"content" => "never mind"})
+      |> render_change()
+
+      assert Presence.typing?(ctx.story.id)
+
+      ctx.view
+      |> form("#composer-form", %{"content" => "  "})
+      |> render_change()
+
+      refute Presence.typing?(ctx.story.id)
     end
 
     test "a blank message records nothing", ctx do

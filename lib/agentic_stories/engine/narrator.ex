@@ -1,9 +1,9 @@
 defmodule AgenticStories.Engine.Narrator do
   @moduledoc """
   The Weaver's quieter duties after the story is live: residue (the traces
-  an arriving player notices of events they missed) and recaps ("Previously…"
-  for a returning player). Both are best-effort — failures simply produce
-  nothing.
+  an arriving player notices of events they missed), recaps ("Previously…"
+  for a returning player), and the tableau behind a player-requested picture.
+  All best-effort — failures simply produce nothing.
   """
 
   require Logger
@@ -11,7 +11,7 @@ defmodule AgenticStories.Engine.Narrator do
   alias AgenticStories.Engine.CharacterMind
   alias AgenticStories.LLM
   alias AgenticStories.LLM.Request
-  alias AgenticStories.Stories.{Location, Story}
+  alias AgenticStories.Stories.{Character, Location, Message, Story}
 
   @doc """
   One or two sentences of sensory aftermath for a player arriving where
@@ -66,6 +66,99 @@ defmodule AgenticStories.Engine.Narrator do
     exception ->
       Logger.warning("residue failed: #{Exception.message(exception)}")
       :none
+  end
+
+  @doc """
+  Reads the story back and describes the CURRENT moment as one photographic
+  tableau — who is here, how they stand, what they are wearing, the light and
+  the state of the place — for the illustrator. This is what the player gets
+  when they ask for a picture of the scene, so it reads the record rather
+  than guessing from the cast list: a coat shrugged off ten beats ago is off.
+
+  Returns `{scene, caption}`, or `:none` when the read-back fails — a picture
+  is never worth crashing a story over.
+  """
+  @spec tableau(Story.t(), Location.t() | nil, [Character.t()], [Message.t()]) ::
+          {:ok, String.t(), String.t()} | :none
+  def tableau(%Story{} = story, location, characters, beats) do
+    request = %Request{
+      model: LLM.character_model(),
+      system: """
+      You are the eye of the illustrator for a story whose tone is:
+      #{story.tone}
+
+      You will be given a place, the people who are there, and the record of
+      the story so far. Describe THE MOMENT THE RECORD ENDS as a single
+      photograph, for an illustrator who has read none of it.
+
+      Write a short caption in the story's voice on the first line, like so:
+
+          CAPTION: The stranger takes the beer
+
+      Then, from the next line on, the photograph itself. Name each person and say where they stand in
+      relation to each other and to the room, their posture, what their hands
+      are doing, where they are looking. Say what they are WEARING as the
+      record has left them — clothing put on, taken off, torn or soaked in
+      the story overrides how they were first described. Say what the place
+      looks like right now: light, weather, time of day, what is on the
+      floor and the walls, what has been moved or broken.
+
+      Concrete nouns and visible facts only. No dialogue, no names of
+      emotions, no backstory, no words about what anyone intends. Never add
+      a person who is not in the list of who is here.
+      """,
+      messages: [
+        %{
+          role: :user,
+          content: """
+          #{tableau_place(location)}Who is here:
+          #{tableau_cast(characters)}
+          The record so far:
+
+          #{CharacterMind.transcript(beats)}
+          """
+        }
+      ],
+      max_tokens: 1024
+    }
+
+    case LLM.chat(request, story_id: story.id, purpose: :tableau) do
+      {:ok, %{text: text}} -> read_tableau(text, location)
+      {:error, _reason} -> :none
+    end
+  rescue
+    exception ->
+      Logger.warning("tableau failed: #{Exception.message(exception)}")
+      :none
+  end
+
+  # Lenient on purpose: the caption line is a nicety, the tableau is the
+  # point. A model that skips the label has still written the photograph.
+  defp read_tableau(text, location) do
+    {caption, scene} =
+      case String.split(String.trim(text || ""), "\n", parts: 2) do
+        ["CAPTION:" <> caption, scene] -> {String.trim(caption), String.trim(scene)}
+        _ -> {nil, String.trim(text || "")}
+      end
+
+    case scene do
+      "" -> :none
+      scene -> {:ok, scene, caption || (location && location.name) || "The scene"}
+    end
+  end
+
+  defp tableau_place(nil), do: ""
+
+  defp tableau_place(%Location{} = location) do
+    "The place: #{location.name} — #{location.description}\n\n"
+  end
+
+  defp tableau_cast([]), do: "- nobody but the player\n"
+
+  defp tableau_cast(characters) do
+    Enum.map_join(characters, "\n", fn character ->
+      "- #{character.name}: #{character.appearance || character.persona}"
+    end)
   end
 
   @doc """

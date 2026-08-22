@@ -1,7 +1,8 @@
 defmodule AgenticStories.Engine.Supervisor do
   @moduledoc """
   Supervises the engine runtime: the registry of character agents, the
-  dynamic supervisor they run under, and the task supervisor for weaving.
+  dynamic supervisor they run under, the task supervisor for weaving, and
+  the player-presence table the agents read before they take a turn.
   """
 
   use Supervisor
@@ -14,6 +15,7 @@ defmodule AgenticStories.Engine.Supervisor do
   def init(_init_arg) do
     children = [
       {Registry, keys: :unique, name: AgenticStories.Engine.Registry},
+      AgenticStories.Engine.Presence,
       {DynamicSupervisor,
        name: AgenticStories.Engine.CharacterSupervisor, strategy: :one_for_one},
       {Task.Supervisor, name: AgenticStories.Engine.TaskSupervisor},
