@@ -50,9 +50,13 @@ Three boundaries. Keep them clean:
   best-effort, plain integer story_id on purpose).
 - `AgenticStories.Engine.DirectorAgent` / `DirectorMind` — one omniscient, slow agent
   per live story. Directions: narrate / nudge (private one-tick impulse via the
-  `nudge` virtual field + energy) / reveal (new location mid-story) / illustrate
-  (chapter plate on a `:illustration` message) / conclude (closing narration, story
-  `:finished`, cast stopped). Same energy discipline, funded only by player activity.
+  `nudge` virtual field + energy) / reveal (new location mid-story) / move (relocate
+  a cast member through the same beat-and-relocation path as a character's own move —
+  the fix for "the fiction says she returned but the world disagrees"; a live agent
+  is told via `CharacterAgent.relocated/2` so it stops acting from the old room) /
+  illustrate (chapter plate on a `:illustration` message) / conclude (closing
+  narration, story `:finished`, cast stopped). Same energy discipline, funded only
+  by player activity.
 - `AgenticStories.Engine.Narrator` — residue (arrival traces of missed beats, watermark
   advances via the residue beat itself) and "Previously…" recaps (ephemeral assign,
   never a message).
@@ -114,7 +118,11 @@ Rules that keep this honest:
 
 ## Witnessing (locations & per-character memory)
 
-- Stories have `locations` (created by the Weaver from the seed). The player
+- Stories have `locations` (created by the Weaver from the seed; the Director can
+  reveal more, and a character who moves to a place the story doesn't know yet opens
+  it — `CharacterAgent.open_location/3`, name-length capped so arrow-prefixed
+  narration never becomes a "place"; such places have a nil description until the
+  story fills one in, and every prompt renderer must tolerate that). The player
   (`story.player_location_id`) and every character (`character.location_id`) are always
   at exactly one. A beat's presence is recorded **at write time**: witness rows in
   `message_witnesses` for characters, `witnessed_by_player` stamped on the message.
@@ -124,6 +132,11 @@ Rules that keep this honest:
   stories) means "witnessed by everyone" — keep that degradation path working.
 - Moves (`Engine.character_move/4`, `Engine.player_move/2`) produce ONE beat with
   `witness_location_ids: [origin, destination]` so both rooms see it.
+- **The player is the camera.** A player message that names a character who is
+  elsewhere summons them first (`Engine.summon_addressed/2` — whole-name,
+  word-bounded), through the same visible move path, BEFORE the message is written —
+  so they witness the summons, get the co-located charge, and answer. The world
+  follows the fiction here; don't "fix" this into a stale-location refusal.
 - Long-term memory is a **journal**: when a character's witnessed count crosses a
   chunk boundary, `Stories.fading_beats/2` hands the fading beats to
   `CharacterMind.consolidate/4`, which writes the NEXT entry (earlier entries are

@@ -25,7 +25,7 @@ import Config
 config :agentic_stories, AgenticStories.LLM,
   adapter: AgenticStories.LLM.Venice,
   weaver_model: "aion-labs-aion-3-0",
-  character_model: "aion-labs-aion-3-0-mini",
+  character_model: "venice-uncensored-1-2",
   director_model: "aion-labs-aion-3-0"
 
 # Image provider port: paints character avatars after a story is woven.
@@ -42,8 +42,8 @@ config :agentic_stories, AgenticStories.Imagery,
 # `:edit_model` composes one around the cast's portraits, which is what puts
 # the actual characters in the picture (see Imagery.compose/2).
 config :agentic_stories, AgenticStories.Imagery.Venice,
-  model: "seedream-v4",
-  edit_model: "seedream-v4-edit"
+  model: "seedream-v5-lite",
+  edit_model: "seedream-v5-lite-edit"
 
 # The energy model. Ticks cost energy; the player is the only net source of
 # it. A speaking character passes chatter_energy to ONE other cast member (the

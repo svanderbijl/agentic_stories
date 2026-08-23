@@ -442,8 +442,11 @@ defmodule AgenticStories.Engine.CharacterMind do
     A beat with nothing in quotation marks is simply something you do, told
     the same way. Two other things you can write instead:
 
-    - To go somewhere else, start the line with an arrow and the exact name
-      of the place: -> The Shore: she takes the stairs two at a time
+    - To go somewhere else, start the line with an arrow and the name of
+      the place: -> The Shore: she takes the stairs two at a time
+      Usually one of the story's places — but if the story truly calls you
+      somewhere it has not been yet, name the new place and go: naming it
+      brings it into the world. Keep such names short and concrete.
     - To stay quiet, write the single word: silence
 
     Stay quiet unless you have something that genuinely moves the scene.
@@ -478,9 +481,15 @@ defmodule AgenticStories.Engine.CharacterMind do
   defp places_paragraph([]), do: ""
 
   defp places_paragraph(locations) do
-    places = Enum.map_join(locations, "\n", &"- #{&1.name}: #{&1.description}")
-    "\nThe places of this story:\n#{places}\n"
+    places = Enum.map_join(locations, "\n", &place_line/1)
+    "\nThe places of this story so far:\n#{places}\n"
   end
+
+  # a place a character opened mid-story has no description yet
+  defp place_line(%Location{name: name, description: nil}), do: "- #{name}"
+
+  defp place_line(%Location{name: name, description: description}),
+    do: "- #{name}: #{description}"
 
   defp consolidation_system(story, character) do
     """

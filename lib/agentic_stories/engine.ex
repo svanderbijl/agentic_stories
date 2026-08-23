@@ -74,6 +74,7 @@ defmodule AgenticStories.Engine do
           {:ok, Stories.Message.t()} | {:error, Ecto.Changeset.t()}
   def player_message(%Story{} = story, content) do
     {kind, content} = parse_player_input(content)
+    summon_addressed(story, content)
     attrs = %{kind: kind, content: content, location_id: story.player_location_id}
 
     with {:ok, message} <- Stories.create_message(story, attrs) do
@@ -102,6 +103,30 @@ defmodule AgenticStories.Engine do
           player_move(story, location.id)
         end
       end)
+    end
+
+    :ok
+  end
+
+  # The player is the camera: if they are talking to someone, that someone is
+  # in the scene. A character named in the player's words who has wandered
+  # elsewhere is pulled back BEFORE the words land — through the same visible
+  # beat-and-relocation path as any move — so they witness the summons and
+  # answer it, instead of the world arguing with the fiction. Whole-name,
+  # word-bounded: "Art" must not be conjured by "a fresh start".
+  defp summon_addressed(%Story{player_location_id: nil}, _content), do: :ok
+
+  defp summon_addressed(%Story{} = story, content) do
+    for character <- Stories.list_characters(story.id),
+        character.location_id != nil,
+        character.location_id != story.player_location_id,
+        Regex.match?(~r/\b#{Regex.escape(character.name)}\b/iu, content) do
+      location = Stories.get_location!(story.id, story.player_location_id)
+
+      case character_move(story, character, location, "finds their way back to you") do
+        {:ok, _message, moved} -> CharacterAgent.relocated(moved.id, moved.location_id)
+        {:error, _reason} -> :ok
+      end
     end
 
     :ok
@@ -219,7 +244,7 @@ defmodule AgenticStories.Engine do
             story,
             location,
             location.name,
-            "An establishing view of #{location.name}. #{location.description}"
+            String.trim("An establishing view of #{location.name}. #{location.description}")
           )
         end
 
@@ -343,6 +368,9 @@ defmodule AgenticStories.Engine do
             :ok
         end
 
+      {:move_character, character_name, location_name, text} ->
+        move_cast_member(story, characters, locations, character_name, location_name, text)
+
       {:illustrate, prompt, caption} ->
         # The prompt invites plates at real turning points; this is what keeps
         # a run of them (and the bill) in check. Code-side on purpose — the
@@ -359,6 +387,42 @@ defmodule AgenticStories.Engine do
 
       :wait ->
         :ok
+    end
+  end
+
+  # The Director relocates a cast member: the same beat-and-relocation path a
+  # character's own move takes, so witnessing and the world stay honest — a
+  # narrated return that moved nobody is how "she is back but still elsewhere"
+  # happens. A live agent is told, or it would keep acting from the old room.
+  defp move_cast_member(story, characters, locations, character_name, location_name, text) do
+    with %Character{} = character <- Enum.find(characters, &(&1.name == character_name)),
+         %Location{} = location <-
+           Stories.find_location(locations, location_name) ||
+             open_directed_location(story, location_name),
+         true <- location.id != character.location_id do
+      text =
+        if is_binary(text) and String.trim(text) != "",
+          do: text,
+          else: "makes their way to #{location.name}"
+
+      case character_move(story, character, location, text) do
+        {:ok, _message, character} ->
+          Logger.info("the Director moves #{character.name} to #{location.name}")
+          CharacterAgent.relocated(character.id, character.location_id)
+          :ok
+
+        {:error, _reason} ->
+          :ok
+      end
+    else
+      _ -> :ok
+    end
+  end
+
+  defp open_directed_location(story, name) do
+    case Stories.create_location(story, %{name: name}) do
+      {:ok, location} -> location
+      {:error, _changeset} -> nil
     end
   end
 

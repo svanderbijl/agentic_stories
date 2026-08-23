@@ -57,6 +57,15 @@ defmodule AgenticStories.Engine.CharacterAgent do
     GenServer.cast(via(character_id), {:nudge, note, amount})
   end
 
+  @doc """
+  The Director moved this character; a running agent must not keep acting
+  from the old room. Quietly does nothing when no agent is running — the
+  database row already holds the truth for the next revival.
+  """
+  def relocated(character_id, location_id) do
+    GenServer.cast(via(character_id), {:relocated, location_id})
+  end
+
   def whereis(character_id) do
     case Registry.lookup(AgenticStories.Engine.Registry, {:character, character_id}) do
       [{pid, _value}] -> pid
@@ -125,6 +134,10 @@ defmodule AgenticStories.Engine.CharacterAgent do
       end
 
     {:noreply, state}
+  end
+
+  def handle_cast({:relocated, location_id}, state) do
+    {:noreply, %{state | character: %{state.character | location_id: location_id}}}
   end
 
   def handle_cast({:nudge, note, amount}, state) do
@@ -327,7 +340,7 @@ defmodule AgenticStories.Engine.CharacterAgent do
   end
 
   defp move(%{story: story, character: character} = state, locations, name, text) do
-    case Stories.find_location(locations, name) do
+    case Stories.find_location(locations, name) || open_location(story, character, name) do
       nil ->
         state
 
@@ -344,6 +357,29 @@ defmodule AgenticStories.Engine.CharacterAgent do
           {:ok, _message, character} -> %{state | character: character}
           {:error, _reason} -> state
         end
+    end
+  end
+
+  # The world is not fixed: a character who walks somewhere the story has
+  # never seen brings the place into existence (described only by what the
+  # story then shows there). A short name is a destination; a rambling one
+  # is narration that happened to start with an arrow, and inventing a
+  # "place" from it would litter the world — dropped, with a log.
+  @max_place_name 60
+
+  defp open_location(story, character, name) do
+    if String.length(name) <= @max_place_name do
+      case Stories.create_location(story, %{name: name}) do
+        {:ok, location} ->
+          Logger.info("#{character.name} opens a new place: #{location.name}")
+          location
+
+        {:error, _changeset} ->
+          nil
+      end
+    else
+      Logger.debug("#{character.name}'s move toward #{inspect(name)} is not a place — dropped")
+      nil
     end
   end
 

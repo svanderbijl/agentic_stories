@@ -234,6 +234,99 @@ defmodule AgenticStories.EngineTest do
       # the player (in the lamp room) sees the arrival
       assert message.witnessed_by_player == true
     end
+
+    test "speaking to an absent character pulls them back into the scene", ctx do
+      away = character_fixture(ctx.story, %{name: "Maren", energy: 0, location_id: ctx.shore.id})
+      pid = start_supervised!({CharacterAgent, character: away, story: ctx.story})
+      Stories.subscribe(ctx.story.id)
+
+      assert {:ok, %Message{}} =
+               Engine.player_message(ctx.story, "Maren, where did you go? Come back.")
+
+      # she is pulled to the player before the words land…
+      assert Stories.get_character!(away.id).location_id == ctx.lamp_room.id
+      assert %{character: %{location_id: agent_location}} = :sys.get_state(pid)
+      assert agent_location == ctx.lamp_room.id
+
+      # …arriving visibly, so the record stays honest
+      assert_receive {:message_created, %Message{kind: :act, witnessed_by_player: true}}
+
+      # …so she hears the summons and gets the full co-located charge
+      memory = Stories.character_memory(Stories.get_character!(away.id), 40)
+      assert Enum.any?(memory, &(&1.content =~ "where did you go"))
+      assert %{energy: 6} = :sys.get_state(pid)
+    end
+
+    test "a mention that is not the character's name summons nobody", ctx do
+      away = character_fixture(ctx.story, %{name: "Art", energy: 0, location_id: ctx.shore.id})
+
+      assert {:ok, %Message{}} =
+               Engine.player_message(ctx.story, "Quite a start to the evening.")
+
+      assert Stories.get_character!(away.id).location_id == ctx.shore.id
+    end
+
+    test "the Director may move a character, and a running agent follows", ctx do
+      wanderer =
+        character_fixture(ctx.story, %{name: "Maren", energy: 0, location_id: ctx.shore.id})
+
+      pid = start_supervised!({CharacterAgent, character: wanderer, story: ctx.story})
+      Stories.subscribe(ctx.story.id)
+
+      direction = {:move_character, "Maren", "The Lamp Room", "comes back up the stairs"}
+
+      assert :ok =
+               Engine.apply_direction(
+                 ctx.story,
+                 direction,
+                 Stories.list_characters(ctx.story.id),
+                 Stories.list_locations(ctx.story.id)
+               )
+
+      # the arrival is a beat the player (in the lamp room) sees
+      assert_receive {:message_created,
+                      %Message{
+                        kind: :act,
+                        content: "comes back up the stairs",
+                        witnessed_by_player: true
+                      }}
+
+      assert Stories.get_character!(wanderer.id).location_id == ctx.lamp_room.id
+      # the live agent must not keep acting from the old room
+      assert %{character: %{location_id: agent_location}} = :sys.get_state(pid)
+      assert agent_location == ctx.lamp_room.id
+    end
+
+    test "a Director move to somewhere new opens the place; an unknown name is a no-op", ctx do
+      wanderer = character_fixture(ctx.story, %{name: "Maren", location_id: ctx.shore.id})
+      Stories.subscribe(ctx.story.id)
+
+      characters = Stories.list_characters(ctx.story.id)
+      locations = Stories.list_locations(ctx.story.id)
+
+      assert :ok =
+               Engine.apply_direction(
+                 ctx.story,
+                 {:move_character, "Nobody Here", "The Shore", nil},
+                 characters,
+                 locations
+               )
+
+      refute_receive {:message_created, _message}, 50
+
+      assert :ok =
+               Engine.apply_direction(
+                 ctx.story,
+                 {:move_character, "Maren", "The Sea Caves", nil},
+                 characters,
+                 locations
+               )
+
+      assert_receive {:location_created,
+                      %AgenticStories.Stories.Location{name: "The Sea Caves"} = caves}
+
+      assert Stories.get_character!(wanderer.id).location_id == caves.id
+    end
   end
 
   describe "scene plates" do

@@ -40,7 +40,7 @@ defmodule AgenticStories.Engine.Narrator do
         %{
           role: :user,
           content: """
-          The place: #{location.name} — #{location.description}
+          The place: #{location.name}#{if location.description, do: " — #{location.description}"}
 
           What happened here while the player was away:
 
@@ -148,6 +148,11 @@ defmodule AgenticStories.Engine.Narrator do
   end
 
   defp tableau_place(nil), do: ""
+
+  # a place a character opened mid-story has no description yet
+  defp tableau_place(%Location{description: nil} = location) do
+    "The place: #{location.name}\n\n"
+  end
 
   defp tableau_place(%Location{} = location) do
     "The place: #{location.name} — #{location.description}\n\n"

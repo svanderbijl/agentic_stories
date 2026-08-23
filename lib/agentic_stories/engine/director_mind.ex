@@ -19,6 +19,7 @@ defmodule AgenticStories.Engine.DirectorMind do
           {:narrate, String.t(), String.t() | nil}
           | {:nudge, String.t(), String.t()}
           | {:reveal, String.t(), String.t()}
+          | {:move_character, String.t(), String.t(), String.t() | nil}
           | {:illustrate, String.t(), String.t()}
           | {:conclude, String.t()}
           | :wait
@@ -58,6 +59,10 @@ defmodule AgenticStories.Engine.DirectorMind do
       {:ok, %{"do" => "reveal", "name" => name, "description" => description}}
       when is_binary(name) and name != "" and is_binary(description) and description != "" ->
         {:ok, {:reveal, name, description}}
+
+      {:ok, %{"do" => "move", "character" => name, "to" => place} = map}
+      when is_binary(name) and name != "" and is_binary(place) and place != "" ->
+        {:ok, {:move_character, name, place, map["text"]}}
 
       {:ok, %{"do" => "illustrate", "prompt" => prompt, "caption" => caption}}
       when is_binary(prompt) and prompt != "" and is_binary(caption) and caption != "" ->
@@ -116,6 +121,7 @@ defmodule AgenticStories.Engine.DirectorMind do
     {"do": "narrate", "text": "one short paragraph of narration in the story's style", "location": "the exact name of the place it happens (omit for something felt everywhere)"}
     {"do": "nudge", "character": "exact name", "note": "a private impulse, in second person, that gives them a dramatic reason to act now"}
     {"do": "reveal", "name": "a new place's short name", "description": "what it is like to stand there"}
+    {"do": "move", "character": "exact name", "to": "the exact name of the place they go (a new short name opens a new place)", "text": "what they do as they go — third person, without their name in front, e.g. 'comes back up the stairs, salt still in her hair'"}
     {"do": "illustrate", "prompt": "who is in frame and what they are doing, in vivid concrete visual detail, for an illustrator", "caption": "a short caption in the story's voice"}
     {"do": "conclude", "text": "two or three closing paragraphs that resolve the arc, addressed to 'you'"}
     {"do": "wait"}
@@ -131,6 +137,10 @@ defmodule AgenticStories.Engine.DirectorMind do
       motion, questions without answers — is a scene to push: nudge someone
       toward the next step of THEIR story.
     - "reveal" a place only when the story has knocked on its door.
+    - The record must never disagree with where people actually stand. When a
+      character has wandered off and the story pulls them back — the player is
+      looking for them, a scene needs them — "move" them there; never merely
+      narrate a return, because narration does not relocate anyone.
     - "illustrate" when the story TURNS — a revelation, an arrival, a rupture, a
       first meeting, a moment the player will remember. Describe the people in
       the frame and what their bodies are doing; a plate of empty scenery is a
@@ -159,7 +169,11 @@ defmodule AgenticStories.Engine.DirectorMind do
   end
 
   defp places(locations) do
-    Enum.map_join(locations, "\n", &"- #{&1.name}: #{&1.description}")
+    Enum.map_join(locations, "\n", fn
+      # a place a character opened mid-story has no description yet
+      %{description: nil} = location -> "- #{location.name}"
+      location -> "- #{location.name}: #{location.description}"
+    end)
   end
 
   defp tick_prompt(story, locations, beats) do

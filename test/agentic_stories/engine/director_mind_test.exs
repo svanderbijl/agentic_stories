@@ -134,6 +134,16 @@ defmodule AgenticStories.Engine.DirectorMindTest do
                  ~s({"do": "illustrate", "prompt": "the door ajar", "caption": "The door, ajar."})
                )
 
+      assert {:ok, {:move_character, "Maren", "The Shore", "slips back down to the water"}} =
+               DirectorMind.parse_direction(
+                 ~s({"do": "move", "character": "Maren", "to": "The Shore", "text": "slips back down to the water"})
+               )
+
+      assert {:ok, {:move_character, "Maren", "The Shore", nil}} =
+               DirectorMind.parse_direction(
+                 ~s({"do": "move", "character": "Maren", "to": "The Shore"})
+               )
+
       assert {:ok, {:conclude, "And so it closed."}} =
                DirectorMind.parse_direction(~s({"do": "conclude", "text": "And so it closed."}))
 
@@ -143,6 +153,7 @@ defmodule AgenticStories.Engine.DirectorMindTest do
     test "rejects malformed directions" do
       assert :error = DirectorMind.parse_direction(~s({"do": "narrate", "text": ""}))
       assert :error = DirectorMind.parse_direction(~s({"do": "nudge", "character": "Maren"}))
+      assert :error = DirectorMind.parse_direction(~s({"do": "move", "character": "Maren"}))
       assert :error = DirectorMind.parse_direction("silence")
     end
   end

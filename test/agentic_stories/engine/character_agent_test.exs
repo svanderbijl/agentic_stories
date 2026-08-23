@@ -298,6 +298,48 @@ defmodule AgenticStories.Engine.CharacterAgentTest do
     assert Process.read_timer(timer) > 30_000
   end
 
+  test "a move to a place the story does not know yet opens it", ctx do
+    tavern = location_fixture(ctx.story, %{name: "The Tavern"})
+    {:ok, character} = Stories.relocate_character(ctx.character, tavern.id)
+
+    expect(LLM.Mock, :chat, fn _request ->
+      {:ok, %Response{text: "-> The Docks: she slips out toward the water"}}
+    end)
+
+    pid = start_agent(ctx.story, character)
+    send(pid, :tick)
+
+    assert_receive {:message_created,
+                    %Message{kind: :act, content: "she slips out toward the water"}},
+                   1_000
+
+    assert_receive {:location_created,
+                    %AgenticStories.Stories.Location{name: "The Docks"} = docks}
+
+    assert Stories.get_character!(character.id).location_id == docks.id
+  end
+
+  test "a rambling destination is narration, not a place — the move is dropped", ctx do
+    tavern = location_fixture(ctx.story, %{name: "The Tavern"})
+    {:ok, character} = Stories.relocate_character(ctx.character, tavern.id)
+
+    expect(LLM.Mock, :chat, fn _request ->
+      {:ok,
+       %Response{
+         text:
+           "-> she wanders off into the night without any real destination in mind, past the shuttered stalls"
+       }}
+    end)
+
+    pid = start_agent(ctx.story, character)
+    send(pid, :tick)
+    :sys.get_state(pid)
+
+    assert [%{name: "The Tavern"}] = Stories.list_locations(ctx.story.id)
+    assert Stories.get_character!(character.id).location_id == tavern.id
+    refute_receive {:message_created, _message}, 50
+  end
+
   test "a dying agent clears its thinking quill", ctx do
     pid = start_agent(ctx.story, ctx.character)
     Process.unlink(pid)
