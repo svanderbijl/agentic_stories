@@ -282,6 +282,69 @@ defmodule AgenticStories.EngineTest do
       assert %{energy: 6} = :sys.get_state(pid)
     end
 
+    test "walking off mid-sentence takes the person you invited with you", ctx do
+      # the Vivian bug: the player says "let's go to the shore", the narrated
+      # move walks them out, and the character they just addressed is left
+      # behind in the room the player abandoned — forever "elsewhere".
+      invited =
+        character_fixture(ctx.story, %{name: "Maren", energy: 0, location_id: ctx.lamp_room.id})
+
+      start_supervised!({CharacterAgent, character: invited, story: ctx.story})
+      Stories.subscribe(ctx.story.id)
+      test_pid = self()
+
+      Mox.stub(LLM.Mock, :chat, fn request ->
+        if request.system =~ "decide whether the player" do
+          send(test_pid, :intent_checked)
+          {:ok, %Response{text: "The Shore"}}
+        else
+          {:ok, %Response{text: "NOTHING"}}
+        end
+      end)
+
+      assert {:ok, %Message{}} =
+               Engine.player_message(ctx.story, "Maren, let's walk down to the shore.")
+
+      assert_receive :intent_checked, 1_000
+
+      # the player went…
+      assert_receive {:message_created, %Message{content: "You make your way to The Shore."}},
+                     1_000
+
+      assert Stories.get_story!(ctx.story.id).player_location_id == ctx.shore.id
+
+      # …and so did she, visibly (a live agent is told through the same
+      # CharacterAgent.relocated path the summon above already covers)
+      assert_receive {:message_created, %Message{content: "follows you to The Shore"}}, 1_000
+      assert Stories.get_character!(invited.id).location_id == ctx.shore.id
+    end
+
+    test "walking off alone leaves the cast where they stand", ctx do
+      stays =
+        character_fixture(ctx.story, %{name: "Maren", energy: 0, location_id: ctx.lamp_room.id})
+
+      Stories.subscribe(ctx.story.id)
+      test_pid = self()
+
+      Mox.stub(LLM.Mock, :chat, fn request ->
+        if request.system =~ "decide whether the player" do
+          send(test_pid, :intent_checked)
+          {:ok, %Response{text: "The Shore"}}
+        else
+          {:ok, %Response{text: "NOTHING"}}
+        end
+      end)
+
+      assert {:ok, %Message{}} = Engine.player_message(ctx.story, "I head down to the shore.")
+      assert_receive :intent_checked, 1_000
+
+      assert_receive {:message_created, %Message{content: "You make your way to The Shore."}},
+                     1_000
+
+      assert Stories.get_story!(ctx.story.id).player_location_id == ctx.shore.id
+      assert Stories.get_character!(stays.id).location_id == ctx.lamp_room.id
+    end
+
     test "a mention that is not the character's name summons nobody", ctx do
       away = character_fixture(ctx.story, %{name: "Art", energy: 0, location_id: ctx.shore.id})
 

@@ -60,7 +60,7 @@ defmodule AgenticStories.Stories do
   location-less story where every beat is witnessed by everyone.
   """
   def complete_weaving(%Story{} = story, blueprint) do
-    story_attrs = Map.take(blueprint, [:title, :premise, :arc, :tone, :style])
+    story_attrs = Map.take(blueprint, [:title, :premise, :protagonist, :arc, :tone, :style])
 
     Ecto.Multi.new()
     |> Ecto.Multi.update(:story, Story.weave_changeset(story, story_attrs))

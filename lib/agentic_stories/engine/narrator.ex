@@ -211,6 +211,88 @@ defmodule AgenticStories.Engine.Narrator do
   end
 
   @doc """
+  Reads a character's own beat for movement they narrated but did not
+  execute — "Vivian follows Jack into the kitchen" — and resolves it to one
+  of the story's places. The arrow (`-> The Kitchen: …`) is the only path a
+  character has to `move/4`, and a model telling a story writes the prose,
+  not the arrow. Without this, the fiction says she followed you and the
+  world keeps her where she was: you walk to the kitchen alone, forever.
+
+  Costs nothing on the overwhelming majority of beats: a beat that never
+  names another place cannot be a departure, and that is decided in code
+  before any call is made.
+  """
+  @spec implied_departure(Story.t(), Character.t(), [Location.t()], String.t()) ::
+          {:ok, Location.t()} | :none
+  def implied_departure(story, character, locations, text)
+
+  def implied_departure(%Story{}, %Character{location_id: nil}, _locations, _text), do: :none
+
+  def implied_departure(%Story{} = story, %Character{} = character, locations, text) do
+    case candidates(character, locations, text) do
+      [] -> :none
+      candidates -> ask_departure(story, character, candidates, text)
+    end
+  end
+
+  # The prefilter, and the reason this is affordable per beat. A place the
+  # beat never names is not a place the beat sends anyone to. Matching is on
+  # the whole name and on its longest word, so "The Kitchen" is found by
+  # "into the kitchen" and "The Walled Garden" by "out to the garden" —
+  # language-agnostic, because the names are the story's own.
+  defp candidates(%Character{location_id: here}, locations, text) do
+    haystack = String.downcase(text)
+
+    for %Location{} = location <- locations,
+        location.id != here,
+        named?(haystack, location.name),
+        do: location
+  end
+
+  defp named?(haystack, name) do
+    name = String.downcase(name)
+
+    String.contains?(haystack, name) or
+      case name |> String.split(~r/\s+/u) |> Enum.max_by(&String.length/1, fn -> "" end) do
+        word when byte_size(word) > 3 -> String.contains?(haystack, word)
+        _short -> false
+      end
+  end
+
+  defp ask_departure(story, character, candidates, text) do
+    places = Enum.map_join(candidates, "\n", &"- #{&1.name}")
+
+    request = %Request{
+      model: LLM.character_model(),
+      system: """
+      You read one beat of an interactive story and decide whether
+      #{character.name} moves themselves to another place IN THIS BEAT —
+      actually going, arriving, leaving, or following someone there, not
+      merely mentioning the place, looking toward it, or talking about going.
+
+      The places #{character.name} could be moving to:
+      #{places}
+
+      Reply with exactly the name of the place #{character.name} moves to,
+      and nothing else. If they stay where they are, reply with the single
+      word NOTHING.
+      """,
+      messages: [%{role: :user, content: text}],
+      max_tokens: 64
+    }
+
+    with {:ok, %{text: reply}} <- LLM.chat(request, story_id: story.id, purpose: :move_intent),
+         answer = reply |> String.trim() |> String.trim_trailing("."),
+         %Location{} = location <- AgenticStories.Stories.find_location(candidates, answer) do
+      {:ok, location}
+    else
+      _ -> :none
+    end
+  rescue
+    _exception -> :none
+  end
+
+  @doc """
   "Previously, in …" — a short second-person recap of what the player has
   witnessed, for reopening a story after time away.
   """

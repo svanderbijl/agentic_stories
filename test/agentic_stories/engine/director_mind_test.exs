@@ -15,6 +15,7 @@ defmodule AgenticStories.Engine.DirectorMindTest do
       id: 1,
       title: "The Door Below",
       premise: "A keeper finds a door on the seabed.",
+      protagonist: "Jack, who keeps the light and lives alone.",
       arc: "Down, through, and changed.",
       tone: "quietly ominous",
       style: "Spare prose.",
@@ -72,6 +73,7 @@ defmodule AgenticStories.Engine.DirectorMindTest do
       assert request.system =~ "Director"
       assert request.system =~ "She has already been through the door."
       assert request.system =~ "The Shore: Wet shingle."
+      assert request.system =~ "Jack, who keeps the light"
       assert [%{role: :user, content: content}] = request.messages
       assert content =~ "[The Lamp Room] The player: Hello?"
       assert content =~ "[The Shore] * Old Tosk digs at the tideline"

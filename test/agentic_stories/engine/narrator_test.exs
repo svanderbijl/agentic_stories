@@ -108,6 +108,77 @@ defmodule AgenticStories.Engine.NarratorTest do
     end
   end
 
+  describe "implied_departure/4" do
+    defp maren(location_id \\ 1) do
+      %Character{id: 7, name: "Maren", persona: "The sister.", location_id: location_id}
+    end
+
+    test "a beat that narrates following the player resolves to the place" do
+      capture_request("The Porch")
+
+      assert {:ok, %Location{name: "The Porch"}} =
+               Narrator.implied_departure(
+                 story(),
+                 maren(),
+                 locations(),
+                 "Maren follows him out onto the porch, her boots loud on the boards."
+               )
+
+      assert_received {:request, request}
+      assert request.system =~ "Maren"
+      assert request.system =~ "The Porch"
+    end
+
+    test "a beat that names no other place never calls the model" do
+      # verify_on_exit! would flag a call; the prefilter must catch this
+      assert :none =
+               Narrator.implied_departure(
+                 story(),
+                 maren(),
+                 locations(),
+                 "Maren shrugs and pours herself a drink."
+               )
+    end
+
+    test "the place the character is already standing in is not a departure" do
+      assert :none =
+               Narrator.implied_departure(
+                 story(),
+                 maren(2),
+                 locations(),
+                 "Maren settles onto the porch bench without a word."
+               )
+    end
+
+    test "a place named without going there is not a departure" do
+      expect(LLM.Mock, :chat, fn _request -> {:ok, %Response{text: "NOTHING"}} end)
+
+      assert :none =
+               Narrator.implied_departure(
+                 story(),
+                 maren(),
+                 locations(),
+                 ~s(Maren looks toward the porch. "He'll be out there till dawn.")
+               )
+    end
+
+    test "unknown places and failures collapse to :none" do
+      expect(LLM.Mock, :chat, fn _request -> {:ok, %Response{text: "The Moon"}} end)
+      assert :none = Narrator.implied_departure(story(), maren(), locations(), "off to the porch")
+
+      expect(LLM.Mock, :chat, fn _request -> {:error, :timeout} end)
+      assert :none = Narrator.implied_departure(story(), maren(), locations(), "off to the porch")
+    end
+
+    test "a character with no location, or a story with no other place, never calls the model" do
+      assert :none =
+               Narrator.implied_departure(story(), maren(nil), locations(), "off to the porch")
+
+      assert :none =
+               Narrator.implied_departure(story(), maren(), [hd(locations())], "to the porch")
+    end
+  end
+
   describe "recap/2" do
     test "writes a second-person recap of witnessed beats" do
       beats = [%Message{kind: :player, content: "Hello?", character: nil}]

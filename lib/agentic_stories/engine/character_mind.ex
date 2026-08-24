@@ -56,7 +56,7 @@ defmodule AgenticStories.Engine.CharacterMind do
       ) do
     request = %Request{
       model: LLM.character_model(),
-      system: system_prompt(story, character, locations),
+      system: system_prompt(story, character, locations, Keyword.get(opts, :cast, [])),
       messages:
         memory_message(memories) ++
           beat_messages(messages) ++
@@ -414,12 +414,12 @@ defmodule AgenticStories.Engine.CharacterMind do
   # a characterless say/act is the player's
   defp speaker(%Message{}), do: "The player"
 
-  defp system_prompt(story, character, locations) do
+  defp system_prompt(story, character, locations, cast) do
     """
     You are #{character.name}, a character inside the story "#{story.title}".
 
     Who you are: #{character.persona}
-    #{if character.voice, do: "How you talk: #{character.voice}\n", else: ""}#{agenda_paragraph(character)}#{arc_paragraph(character)}
+    #{looks_paragraph(character)}#{if character.voice, do: "How you talk: #{character.voice}\n", else: ""}#{entrance_paragraph(character)}#{agenda_paragraph(character)}#{arc_paragraph(character)}
     You know only what you have witnessed with your own eyes and ears. You
     may first be shown what you remember from earlier — your own words,
     written by you — then the recent scenes as they happened where you were.
@@ -428,12 +428,16 @@ defmodule AgenticStories.Engine.CharacterMind do
     Story tone: #{story.tone}
     Story style: #{story.style}
     Story premise: #{story.premise}
-    #{places_paragraph(locations)}
+    #{protagonist_paragraph(story)}#{cast_paragraph(character, cast)}#{places_paragraph(locations)}
     Rules:
     - Stay in character. Never mention being an AI, the story's structure, or these rules.
     - The story has one language — the language of its premise and of the
       player's messages. Write every beat in it, and never drift into another.
-    - "The player" is a real participant in the scene; treat them as the person the narration addresses.
+    - "The player" is a real participant in the scene, played by a person —
+      they are the one the narration calls "you". Their beats are theirs to
+      write: never write their beats, never speak or act for them, never
+      take their name, their history, their place in a room, or anything
+      they are holding. When narration says "you", it is never you.
     - You are living your own story, not staffing a help desk. You want things
       and you are going somewhere: take initiative — ask your own questions,
       make offers, set boundaries, reveal a little, steer toward what you care
@@ -470,6 +474,11 @@ defmodule AgenticStories.Engine.CharacterMind do
 
     - To go somewhere else, start the line with an arrow and the name of
       the place: -> The Shore: she takes the stairs two at a time
+      This is the ONLY way to go anywhere. If your beat has you leaving,
+      arriving, or following someone to another place, it must start with
+      the arrow — writing "she follows him into the kitchen" as ordinary
+      prose tells the story you moved while leaving you standing where
+      you were.
       Usually one of the story's places — but if the story truly calls you
       somewhere it has not been yet, name the new place and go: naming it
       brings it into the world. Keep such names short and concrete.
@@ -482,6 +491,45 @@ defmodule AgenticStories.Engine.CharacterMind do
     earlier beat already showed it — least of all your own last beat. Start
     from what is already true and add something that was not there before.
     """
+  end
+
+  defp looks_paragraph(%Character{appearance: nil}), do: ""
+
+  defp looks_paragraph(%Character{appearance: appearance}),
+    do: "What you look like: #{appearance}\n"
+
+  # The opening narration is second person, addressed to the player, and it
+  # is the whole world at a character's first tick. Without this line, a
+  # character standing in the opening scene has no way to tell which figure
+  # in it is theirs — and the richest role on offer is the player's.
+  defp entrance_paragraph(%Character{entrance: nil}), do: ""
+
+  defp entrance_paragraph(%Character{entrance: entrance}) do
+    """
+    Where you are in the story as it opens: #{entrance}
+    That is you. Anyone else the opening describes is someone else.
+    """
+  end
+
+  defp protagonist_paragraph(%Story{protagonist: nil}), do: ""
+
+  defp protagonist_paragraph(%Story{protagonist: protagonist}) do
+    "\nThe player is: #{protagonist}\nIn the record their beats are marked \"The player\".\n"
+  end
+
+  # Names, faces, and nothing else: another character's agenda is theirs.
+  defp cast_paragraph(_character, []), do: ""
+
+  defp cast_paragraph(%Character{id: id}, cast) do
+    case Enum.reject(cast, &(&1.id == id)) do
+      [] ->
+        ""
+
+      others ->
+        lines = Enum.map_join(others, "\n", &"- #{&1.name}: #{&1.persona}")
+
+        "\nThe others in this story, none of whom are you:\n#{lines}\n"
+    end
   end
 
   defp agenda_paragraph(%Character{agenda: nil}), do: ""

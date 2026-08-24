@@ -43,6 +43,51 @@ defmodule AgenticStories.Engine.CharacterAgentTest do
     assert Stories.get_character!(ctx.character.id).energy == 0
   end
 
+  test "a beat that narrates walking out actually moves the character", ctx do
+    # the Vivian bug: she writes "Vivian follows Jack into the kitchen" with no
+    # arrow, so it parses as a say and she never leaves the room.
+    lamp = location_fixture(ctx.story, %{name: "The Lamp Room"})
+    shore = location_fixture(ctx.story, %{name: "The Shore", description: "Wet shingle."})
+    {:ok, story} = Stories.move_player(ctx.story, shore.id)
+    character = character_fixture(story, %{name: "Maren", energy: 2, location_id: lamp.id})
+
+    follows = ~s(Maren follows him down to the shore. "You shouldn't be out here alone.")
+
+    stub(LLM.Mock, :chat, fn request ->
+      if request.system =~ "You are Maren",
+        do: {:ok, %Response{text: follows}},
+        else: {:ok, %Response{text: "The Shore"}}
+    end)
+
+    pid = start_agent(story, character)
+    send(pid, :tick)
+
+    # the beat is still hers, still spoken — but she is where she said she went
+    assert_receive {:message_created, %Message{kind: :say, content: ^follows}}, 1_000
+    assert Stories.get_character!(character.id).location_id == shore.id
+    assert %{character: %{location_id: agent_location}} = :sys.get_state(pid)
+    assert agent_location == shore.id
+  end
+
+  test "a beat that merely mentions another place moves nobody", ctx do
+    lamp = location_fixture(ctx.story, %{name: "The Lamp Room"})
+    location_fixture(ctx.story, %{name: "The Shore", description: "Wet shingle."})
+    {:ok, story} = Stories.move_player(ctx.story, lamp.id)
+    character = character_fixture(story, %{name: "Maren", energy: 2, location_id: lamp.id})
+
+    stub(LLM.Mock, :chat, fn request ->
+      if request.system =~ "You are Maren",
+        do: {:ok, %Response{text: ~s("The shore's no place for him tonight.")}},
+        else: {:ok, %Response{text: "NOTHING"}}
+    end)
+
+    pid = start_agent(story, character)
+    send(pid, :tick)
+
+    assert_receive {:message_created, %Message{kind: :say}}, 1_000
+    assert Stories.get_character!(character.id).location_id == lamp.id
+  end
+
   test "a tick lands mid-sentence: the floor stays the player's, and nothing is spent", ctx do
     Engine.player_typing(ctx.story)
 

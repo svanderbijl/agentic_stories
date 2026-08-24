@@ -16,6 +16,7 @@ defmodule AgenticStories.Engine.WeaverTest do
   @blueprint %{
     "title" => "The Door Below",
     "premise" => "A keeper finds a door on the seabed.",
+    "protagonist" => "The keeper, who has tended this light for nine years.",
     "arc" => "Down, through, and changed.",
     "tone" => "quietly ominous",
     "style" => "Spare prose.",
@@ -33,6 +34,7 @@ defmodule AgenticStories.Engine.WeaverTest do
         "agenda" => "She has already been through the door.",
         "arc" => "From gatekeeper to confessor.",
         "appearance" => "Wind-burned, dark braid, a coat two sizes too big.",
+        "entrance" => "You are the woman walking up from the tideline.",
         "location" => "The Shore"
       },
       %{
@@ -194,10 +196,22 @@ defmodule AgenticStories.Engine.WeaverTest do
                  location: "The Shore",
                  agenda: "She has already been through the door.",
                  arc: "From gatekeeper to confessor.",
-                 appearance: "Wind-burned, dark braid, a coat two sizes too big."
+                 appearance: "Wind-burned, dark braid, a coat two sizes too big.",
+                 entrance: "You are the woman walking up from the tideline."
                },
-               %{location: "The Lamp Room", agenda: nil, arc: nil, appearance: nil}
+               %{location: "The Lamp Room", agenda: nil, arc: nil, appearance: nil, entrance: nil}
              ] = blueprint.characters
+    end
+
+    test "carries the protagonist through, and tolerates a blueprint without one" do
+      assert {:ok, blueprint} = @blueprint |> Jason.encode!() |> Weaver.parse_blueprint()
+      assert blueprint.protagonist == "The keeper, who has tended this light for nine years."
+
+      assert {:ok, %{protagonist: nil}} =
+               @blueprint
+               |> Map.delete("protagonist")
+               |> Jason.encode!()
+               |> Weaver.parse_blueprint()
     end
 
     test "avatar prompts paint from the appearance when there is one" do

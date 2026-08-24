@@ -23,7 +23,7 @@ defmodule AgenticStories.Engine.CharacterAgent do
   require Logger
 
   alias AgenticStories.Engine
-  alias AgenticStories.Engine.CharacterMind
+  alias AgenticStories.Engine.{CharacterMind, Narrator}
   alias AgenticStories.Engine.Presence
   alias AgenticStories.Stories
 
@@ -213,13 +213,15 @@ defmodule AgenticStories.Engine.CharacterAgent do
     locations = Stories.list_locations(story.id)
     memories = Stories.list_memories(character)
     messages = Stories.character_memory(character, Engine.config(:memory_window))
-    alone? = alone_with_player?(story, character)
+    cast = Stories.list_characters(story.id)
+    alone? = alone_with_player?(story, character, cast)
 
     Stories.signal_thinking(story.id, character.id, true)
 
     decision =
       CharacterMind.decide(story, character, memories, messages, locations,
-        alone_with_player?: alone?
+        alone_with_player?: alone?,
+        cast: cast
       )
 
     Stories.signal_thinking(story.id, character.id, false)
@@ -230,10 +232,10 @@ defmodule AgenticStories.Engine.CharacterAgent do
     {state, delay, answered?} =
       case decision do
         {:say, text} ->
-          attempt(state, :say, text, messages)
+          attempt(state, :say, text, messages, locations)
 
         {:act, text} ->
-          attempt(state, :act, text, messages)
+          attempt(state, :act, text, messages, locations)
 
         {:move, destination, text} ->
           {move(state, locations, destination, text), tick_delay(), true}
@@ -254,7 +256,7 @@ defmodule AgenticStories.Engine.CharacterAgent do
 
   # Is the player here, with no other character present? Then everything
   # they say is to this character.
-  defp alone_with_player?(%{id: story_id}, character) do
+  defp alone_with_player?(%{id: story_id}, character, cast) do
     player_location = Stories.player_location_id(story_id)
 
     here? =
@@ -262,7 +264,7 @@ defmodule AgenticStories.Engine.CharacterAgent do
         player_location == character.location_id
 
     here? and
-      not Enum.any?(Stories.list_characters(story_id), fn other ->
+      not Enum.any?(cast, fn other ->
         other.id != character.id and
           (is_nil(other.location_id) or other.location_id == character.location_id)
       end)
@@ -272,6 +274,17 @@ defmodule AgenticStories.Engine.CharacterAgent do
   # started typing, while this character was thinking) holds the line but
   # retries at the wake delay — they still have something to say. A
   # repetition is just dropped.
+  defp attempt(%{story: story, character: character} = state, kind, text, messages, locations) do
+    # A beat that narrates its own departure IS a move, however it was
+    # written — it takes the move path (guards and all are for holding the
+    # floor, and someone walking out has already left). The arrow is the
+    # documented way; prose is what a model telling a story actually writes.
+    case Narrator.implied_departure(story, character, locations, text) do
+      {:ok, location} -> {relocate(state, location, text, kind), tick_delay(), true}
+      :none -> attempt(state, kind, text, messages)
+    end
+  end
+
   defp attempt(%{story: story, character: character} = state, kind, text, messages) do
     case verdict(character, text, messages) do
       :ok ->
@@ -353,10 +366,14 @@ defmodule AgenticStories.Engine.CharacterAgent do
             do: text,
             else: "slips away toward #{location.name}"
 
-        case Engine.character_move(story, character, location, text) do
-          {:ok, _message, character} -> %{state | character: character}
-          {:error, _reason} -> state
-        end
+        relocate(state, location, text)
+    end
+  end
+
+  defp relocate(%{story: story, character: character} = state, location, text, kind \\ :act) do
+    case Engine.character_move(story, character, location, text, kind) do
+      {:ok, _message, character} -> %{state | character: character}
+      {:error, _reason} -> state
     end
   end
 

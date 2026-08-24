@@ -12,6 +12,10 @@ defmodule AgenticStories.Stories.Story do
     field :title, :string
     field :seed, :string
     field :premise, :string
+    # Who the player is in this story, in the third person. Every character
+    # is told it: an unnamed, bodiless player is a vacuum the cast fills by
+    # assuming the player's own role.
+    field :protagonist, :string
     field :arc, :string
     field :tone, :string
     field :style, :string
@@ -36,7 +40,7 @@ defmodule AgenticStories.Stories.Story do
 
   def weave_changeset(story, attrs) do
     story
-    |> cast(attrs, [:title, :premise, :arc, :tone, :style])
+    |> cast(attrs, [:title, :premise, :protagonist, :arc, :tone, :style])
     |> validate_required([:title, :premise, :arc, :tone, :style])
     |> put_change(:status, :live)
   end

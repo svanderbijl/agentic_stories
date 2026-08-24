@@ -119,6 +119,57 @@ defmodule AgenticStories.Engine.CharacterMindTest do
       assert instruction.text =~ "Say it now."
     end
 
+    test "says who the player is, how this character enters, and who else is in the cast" do
+      elsewhere = %Character{
+        id: 2,
+        name: "Old Tosk",
+        persona: "A retired diver.",
+        agenda: "He cut the rope himself."
+      }
+
+      arriving =
+        struct!(character(),
+          appearance: "Tall, city clothes, wrong shoes for shingle.",
+          entrance: "You are the woman walking up from the tideline."
+        )
+
+      told = struct!(story(), protagonist: "Jack, who keeps the light and lives alone.")
+
+      capture_request("silence")
+
+      assert :wait =
+               CharacterMind.decide(told, arriving, [], [], locations(),
+                 cast: [arriving, elsewhere]
+               )
+
+      assert_received {:request, request}
+
+      # who the player is, and that their body is not this character's to write
+      assert request.system =~ "Jack, who keeps the light"
+      assert request.system =~ "never write their beats"
+
+      # which figure in the opening narration this character is
+      assert request.system =~ "You are the woman walking up from the tideline."
+      assert request.system =~ "Tall, city clothes"
+
+      # the rest of the cast, by name — and never themselves
+      assert request.system =~ "Old Tosk: A retired diver."
+      refute request.system =~ "- Maren:"
+
+      # another character's agenda is theirs alone
+      refute request.system =~ "He cut the rope himself."
+    end
+
+    test "a story woven before protagonists and entrances still builds a prompt" do
+      capture_request("silence")
+      assert :wait = CharacterMind.decide(story(), character(), [], [], locations())
+
+      assert_received {:request, request}
+      assert request.system =~ "You are Maren"
+      refute request.system =~ "The player is"
+      refute request.system =~ "The others in this story"
+    end
+
     test "a directly addressed character is told silence is not an option" do
       messages = [%Message{id: 1, kind: :player, content: "Maren, what is it?", character: nil}]
 

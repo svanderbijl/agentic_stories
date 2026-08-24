@@ -144,10 +144,24 @@ Rules that keep this honest:
   "elsewhere" (never where), and the arrival narration reveals the place — you
   learn where someone went by finding them.
 - **The player is the camera.** A player message that names a character who is
-  elsewhere summons them first (`Engine.summon_addressed/2` — whole-name,
+  elsewhere summons them first (`Engine.summon_addressed/3` — whole-name,
   word-bounded), through the same visible move path, BEFORE the message is written —
   so they witness the summons, get the co-located charge, and answer. The world
   follows the fiction here; don't "fix" this into a stale-location refusal.
+  A beat that also moves the player (`follow_narrated_move/2`) summons AGAIN at
+  the destination: "Vivian, let's walk to the kitchen" gathered her before the
+  words landed, and the walk would otherwise leave her in the room the player
+  just abandoned.
+- **Narrated movement moves people — for characters too, not just the player.**
+  The arrow (`-> The Kitchen: …`) is a character's only path to `move/4`, and a
+  model telling a story writes "Vivian follows Jack into the kitchen" instead.
+  `Narrator.implied_departure/4` reads every say/act beat for a departure and
+  routes it through `Engine.character_move/5`, preserving the beat's kind so a
+  beat that speaks *and* leaves is still a `:say` (torch, guards). It is gated
+  in code — a beat that never names another place cannot be a departure, and
+  costs no call. Without this the fiction says she followed you and the world
+  keeps her behind: you walk to the kitchen alone, forever, and her replies are
+  written into the room you left (`witnessed_by_player: false`).
 - Long-term memory is a **journal**: when a character's witnessed count crosses a
   chunk boundary, `Stories.fading_beats/2` hands the fading beats to
   `CharacterMind.consolidate/4`, which writes the NEXT entry (earlier entries are
@@ -156,6 +170,29 @@ Rules that keep this honest:
   Nothing leaves the raw window until it lives in a block
   (`character_memory/2` trims to `min(chunk_drop, memory_beats)`), so a failed
   consolidation never punches a hole in what a character knows.
+
+## Who's who (the player, and not-the-player)
+
+The opening narration is second person, addressed to the player, and it is a
+character's ENTIRE world at their first tick. Three fields keep the cast from
+assuming the player's role — the failure where the woman whose car broke down
+writes a beat from the porch, holding the player's rifle:
+
+- `story.protagonist` — who the player is, third person, woven from the seed
+  (the seed itself is read by NOTHING but the Weaver). Rendered into every
+  character's system prompt and the Director's. The Weaver still never casts
+  the player as a `Character`; this describes them, it does not add them.
+- `character.entrance` — which figure in the opening narration this character
+  is, in the second person ("You are the woman whose car has just died on the
+  road below the porch"). Without it, a character placed at the opening
+  location reads "You'd been on the porch" and takes it personally.
+- the cast roster in `CharacterMind.system_prompt/4` — other characters by
+  name and persona, **never their agendas**, so "someone else" is a person
+  with a name rather than a gap.
+
+All three are static per story, so they live in the system prompt and cost
+prompt caching nothing. All three degrade to "" when nil — stories woven
+before this migration still build a prompt, they just still guess.
 
 ## The energy model (config: `:agentic_stories, AgenticStories.Engine`)
 

@@ -123,6 +123,7 @@ defmodule AgenticStories.Engine.Weaver do
        %{
          title: map["title"],
          premise: map["premise"],
+         protagonist: optional(map["protagonist"]),
          arc: map["arc"],
          tone: map["tone"],
          style: map["style"],
@@ -146,6 +147,7 @@ defmodule AgenticStories.Engine.Weaver do
         agenda: attrs["agenda"],
         arc: attrs["arc"],
         appearance: attrs["appearance"],
+        entrance: attrs["entrance"],
         location: attrs["location"],
         energy: Engine.config(:initial_energy)
       }
@@ -164,6 +166,8 @@ defmodule AgenticStories.Engine.Weaver do
 
   defp filled?(value), do: is_binary(value) and String.trim(value) != ""
 
+  defp optional(value), do: if(filled?(value), do: value, else: nil)
+
   defp describe_failure({:error, _reason}), do: "the weave came apart mid-thread"
   defp describe_failure(:error), do: "the weave came back malformed"
 
@@ -180,6 +184,7 @@ defmodule AgenticStories.Engine.Weaver do
     {
       "title": "a short, evocative title",
       "premise": "one or two sentences of what this story is about",
+      "protagonist": "who the PLAYER is in this story, in the third person, as the cast would see them: name (the one the seed gives them, or one that fits), what they are doing here, and what they look like — one or two sentences",
       "arc": "one paragraph: how it opens, where the tension builds, and the shapes an ending might take — leave room for the player to bend it",
       "tone": "a few comma-separated words (e.g. 'wistful, dry-humored, quietly ominous')",
       "style": "prose style guidance the narrator and characters will follow",
@@ -204,11 +209,22 @@ defmodule AgenticStories.Engine.Weaver do
       ]
     }
 
+    The opening narration is written to the player as "you". Every character
+    who appears in it reads it as part of their own memory, and cannot tell
+    which person in it is themselves unless you say so — that is what
+    "entrance" is for, and a character in the opening scene without one will
+    assume the player's role. For the same reason "protagonist" is never
+    optional: read the seed for who the player says they are and name them.
+    If the seed does not say, invent someone spare who fits, and make sure
+    the opening narration and each entrance agree with what you wrote.
+
     Give the story two to four locations implied by the seed — the world the
     player can move through. Give it two to four characters, each placed at
     one of those locations: at least one should be present at the opening
     scene, but someone elsewhere makes the world feel inhabited — the player
-    only ever sees what happens where they are. Never cast the player. Honor
+    only ever sees what happens where they are. Never cast the player as a
+    character — "protagonist" describes them, it does not add them to the
+    cast. Honor
     the seed: keep its language, its ideas, and its implied genre, and
     amplify what makes it interesting.
     """

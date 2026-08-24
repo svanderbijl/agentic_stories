@@ -107,7 +107,7 @@ defmodule AgenticStories.Engine.DirectorMind do
     You see everything, everywhere; the player and the characters do not.
 
     Premise: #{story.premise}
-    The arc you are steering toward: #{story.arc}
+    #{protagonist_line(story)}The arc you are steering toward: #{story.arc}
     Tone: #{story.tone}
     Style: #{story.style}
 
@@ -154,6 +154,11 @@ defmodule AgenticStories.Engine.DirectorMind do
     - Never speak for a character and never address the player directly outside narration.
     """
   end
+
+  defp protagonist_line(%Story{protagonist: nil}), do: ""
+
+  defp protagonist_line(%Story{protagonist: protagonist}),
+    do: "The player, whom the story is told to: #{protagonist}\n"
 
   defp cast(characters, locations) do
     names = Map.new(locations, &{&1.id, &1.name})

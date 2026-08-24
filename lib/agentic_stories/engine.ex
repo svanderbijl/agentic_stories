@@ -99,8 +99,13 @@ defmodule AgenticStories.Engine do
         with {:ok, location} <- Narrator.implied_move(story, locations, content),
              # re-read: the world may have moved while we were reading intent
              %Story{status: :live} = story <- Stories.get_story!(story.id),
-             true <- location.id != story.player_location_id do
-          player_move(story, location.id)
+             true <- location.id != story.player_location_id,
+             {:ok, story} <- player_move(story, location.id) do
+          # "Maren, let's walk down to the shore" gathered her BEFORE the
+          # words landed — and then the walk left her standing in the room
+          # the player just abandoned, permanently elsewhere. Whoever the
+          # beat named comes along.
+          summon_addressed(story, content, "follows you to #{location.name}")
         end
       end)
     end
@@ -114,16 +119,18 @@ defmodule AgenticStories.Engine do
   # beat-and-relocation path as any move — so they witness the summons and
   # answer it, instead of the world arguing with the fiction. Whole-name,
   # word-bounded: "Art" must not be conjured by "a fresh start".
-  defp summon_addressed(%Story{player_location_id: nil}, _content), do: :ok
+  defp summon_addressed(story, content, narration \\ "finds their way back to you")
 
-  defp summon_addressed(%Story{} = story, content) do
+  defp summon_addressed(%Story{player_location_id: nil}, _content, _narration), do: :ok
+
+  defp summon_addressed(%Story{} = story, content, narration) do
     for character <- Stories.list_characters(story.id),
         character.location_id != nil,
         character.location_id != story.player_location_id,
         Regex.match?(~r/\b#{Regex.escape(character.name)}\b/iu, content) do
       location = Stories.get_location!(story.id, story.player_location_id)
 
-      case character_move(story, character, location, "finds their way back to you") do
+      case character_move(story, character, location, narration) do
         {:ok, _message, moved} -> CharacterAgent.relocated(moved.id, moved.location_id)
         {:error, _reason} -> :ok
       end
@@ -197,11 +204,19 @@ defmodule AgenticStories.Engine do
 
   @doc """
   Moves a character: one beat, witnessed at both the origin and the
-  destination, then the relocation itself.
+  destination, then the relocation itself. `kind` keeps a beat that both
+  speaks and leaves ("Maren follows him down, "You shouldn't be out here"")
+  a `:say`, so it still passes the torch and still reads as dialogue.
   """
-  def character_move(%Story{} = story, %Character{} = character, %Location{} = location, text) do
+  def character_move(
+        %Story{} = story,
+        %Character{} = character,
+        %Location{} = location,
+        text,
+        kind \\ :act
+      ) do
     attrs = %{
-      kind: :act,
+      kind: kind,
       content: text,
       character_id: character.id,
       location_id: location.id,

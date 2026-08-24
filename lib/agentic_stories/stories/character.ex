@@ -18,6 +18,10 @@ defmodule AgenticStories.Stories.Character do
     # What they look like — shared by portrait prompts and scene plates so
     # every image of this character agrees with the others.
     field :appearance, :string
+    # Which figure in the opening narration is this character — the narration
+    # is second person and addressed to the player, so without this a
+    # character has no way to tell themselves from the person being told.
+    field :entrance, :string
     # A one-tick whisper from the Director; never persisted.
     field :nudge, :string, virtual: true
     field :energy, :integer, default: 0
@@ -38,7 +42,17 @@ defmodule AgenticStories.Stories.Character do
 
   def changeset(character, attrs) do
     character
-    |> cast(attrs, [:name, :persona, :voice, :agenda, :arc, :appearance, :energy, :location_id])
+    |> cast(attrs, [
+      :name,
+      :persona,
+      :voice,
+      :agenda,
+      :arc,
+      :appearance,
+      :entrance,
+      :energy,
+      :location_id
+    ])
     |> validate_required([:name, :persona])
     |> validate_number(:energy, greater_than_or_equal_to: 0)
   end
