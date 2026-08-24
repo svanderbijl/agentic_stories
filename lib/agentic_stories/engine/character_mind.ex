@@ -7,14 +7,20 @@ defmodule AgenticStories.Engine.CharacterMind do
 
   The request is shaped for prompt caching as an append-only prefix:
 
-      [static system] [memory block 1..N, frozen] [raw beats] [instruction]
+      [static system] [memory message, frozen blocks] [one user message per
+      beat] [instruction message]
 
-  Memory blocks are written once and never rewritten; consolidation appends
-  block N+1 and trims the raw tail, so everything through block N stays
-  byte-identical across ticks — cached automatically on xAI and via the
-  breakpoints on Anthropic. Keep it that way: anything volatile before the
-  newest raw beat (or any change to how a beat or block is rendered)
-  silently invalidates the cached prefix.
+  Every beat is its own `user` message in the Request, and a new beat only
+  ever APPENDS a message — nothing already sent is rewritten. On the wire
+  every driver folds the same-role run into ONE turn, blocks in order
+  (Anthropic rejects consecutive same-role messages; chat-template models
+  degrade badly on hundreds of one-line user turns). Memory blocks are
+  written once and never rewritten; consolidation appends block N+1 and
+  trims the raw tail, so everything through block N stays byte-identical
+  across ticks — cached automatically on xAI and via the breakpoints on
+  Anthropic. Keep it that way: anything volatile before the newest raw beat
+  (or any change to how a beat or block is rendered) silently invalidates
+  the cached prefix.
   """
 
   require Logger
@@ -48,15 +54,18 @@ defmodule AgenticStories.Engine.CharacterMind do
         locations,
         opts \\ []
       ) do
-    content =
-      memory_blocks(memories) ++
-        transcript_blocks(messages) ++ [instruction(character, messages, locations, opts)]
-
     request = %Request{
       model: LLM.character_model(),
       system: system_prompt(story, character, locations),
-      messages: [%{role: :user, content: content}],
-      max_tokens: 1024
+      messages:
+        memory_message(memories) ++
+          beat_messages(messages) ++
+          [%{role: :user, content: [instruction(character, messages, locations, opts)]}],
+      temperature: LLM.character_temperature(),
+      # a beat is a paragraph at most, but reasoning models spend thinking
+      # tokens against this cap before a word of prose lands — headroom is
+      # free, a mid-sentence truncation is not
+      max_tokens: 4096
     }
 
     with {:ok, response} <- LLM.chat(request, story_id: story.id, purpose: :tick),
@@ -86,7 +95,8 @@ defmodule AgenticStories.Engine.CharacterMind do
       model: LLM.character_model(),
       system: consolidation_system(story, character),
       messages: [%{role: :user, content: consolidation_prompt(character, memories, beats)}],
-      max_tokens: 1024
+      temperature: LLM.character_temperature(),
+      max_tokens: 4096
     }
 
     case LLM.chat(request, story_id: story.id, purpose: :consolidate) do
@@ -150,7 +160,8 @@ defmodule AgenticStories.Engine.CharacterMind do
 
   Two things are stripped before any of that: the character's own name, which
   a model will copy from the `Name: line` transcript format it has just been
-  reading, and the leading dash the reading pane draws for itself.
+  reading, and the leading dash the reading pane draws for itself — em, en,
+  or plain hyphen, before or after the name, never the move arrow's.
 
   A reply that still arrives as a decision object is read as one. Models
   reach for JSON out of habit, and braces spilled into the story are worse
@@ -160,7 +171,7 @@ defmodule AgenticStories.Engine.CharacterMind do
   def parse_decision(text, name \\ nil)
 
   def parse_decision(text, name) when is_binary(text) do
-    case text |> strip_prefix(name) |> String.trim() do
+    case text |> strip_dash() |> strip_prefix(name) |> String.trim() do
       "" -> {:ok, :wait}
       "{" <> _rest = object -> parse_object(object)
       prose -> {:ok, read_prose(prose)}
@@ -201,8 +212,10 @@ defmodule AgenticStories.Engine.CharacterMind do
   end
 
   # A model that has just read a transcript of "Maren: …" lines will write
-  # one back. It is their own beat; the name is added again downstream.
-  defp strip_prefix(text, nil), do: strip_dash(text)
+  # one back — the dash is stripped before this runs, so a "- Maren: …"
+  # frame loses both halves. It is their own beat; the name is added again
+  # downstream.
+  defp strip_prefix(text, nil), do: text
 
   defp strip_prefix(text, name) do
     trimmed = String.trim(text)
@@ -211,16 +224,17 @@ defmodule AgenticStories.Engine.CharacterMind do
       [head, rest] ->
         if String.trim(head) |> String.downcase() == String.downcase(name),
           do: strip_dash(rest),
-          else: strip_dash(trimmed)
+          else: trimmed
 
       _ ->
-        strip_dash(trimmed)
+        trimmed
     end
   end
 
-  # the reading pane draws the dialogue dash itself
+  # the reading pane draws the dialogue dash itself; a plain hyphen counts
+  # too, but never the one that begins a move arrow
   defp strip_dash(text) do
-    String.replace(text, ~r/\A\s*[—–]\s*/u, "")
+    String.replace(text, ~r/\A\s*(?:[—–]|-(?!>))\s*/u, "")
   end
 
   defp blank_to_nil(nil), do: nil
@@ -268,35 +282,45 @@ defmodule AgenticStories.Engine.CharacterMind do
     end
   end
 
-  # Frozen memory blocks lead the content; the last one carries a breakpoint
-  # so the whole chain is a reusable prefix even when the raw tail changes.
-  defp memory_blocks([]), do: []
+  # Frozen memory blocks lead as one message; the last block carries a
+  # breakpoint so the whole chain is a reusable prefix even as beats append.
+  defp memory_message([]), do: []
 
-  defp memory_blocks(memories) do
+  defp memory_message(memories) do
     header = %{
       text: "What you remember from earlier, oldest first, in your own words:\n\n",
       cache: false
     }
 
-    blocks = Enum.map(memories, &%{text: &1.content <> "\n\n", cache: false})
+    blocks =
+      [header | Enum.map(memories, &%{text: &1.content <> "\n\n", cache: false})]
+      |> List.update_at(-1, &%{&1 | cache: true})
 
-    [header | blocks]
-    |> List.update_at(-1, &%{&1 | cache: true})
+    [%{role: :user, content: blocks}]
   end
 
-  # The transcript rides as one block per beat so the prefix stays byte-stable
-  # while the scene grows; the breakpoint sits on the newest beat. The
-  # instruction comes after the breakpoint, so it may vary freely — the
-  # character's current location lives there because moves change it.
-  defp transcript_blocks([]) do
-    [%{text: "The scene has just opened. Nothing has happened yet.\n", cache: false}]
+  # Each beat is its own user message, so the transcript grows by appending
+  # messages and the already-sent prefix stays byte-stable; the breakpoint
+  # sits on the newest beat. The instruction message comes after the
+  # breakpoint, so it may vary freely — the character's current location
+  # lives there because moves change it.
+  defp beat_messages([]) do
+    [
+      beat_message(%{
+        text: "The scene has just opened. Nothing has happened yet.\n",
+        cache: false
+      })
+    ]
   end
 
-  defp transcript_blocks(messages) do
+  defp beat_messages(messages) do
     messages
     |> Enum.map(&%{text: line(&1) <> "\n", cache: false})
     |> List.update_at(-1, &%{&1 | cache: true})
+    |> Enum.map(&beat_message/1)
   end
+
+  defp beat_message(block), do: %{role: :user, content: [block]}
 
   @doc """
   True when the player's latest beat is the newest thing this character has
@@ -407,6 +431,8 @@ defmodule AgenticStories.Engine.CharacterMind do
     #{places_paragraph(locations)}
     Rules:
     - Stay in character. Never mention being an AI, the story's structure, or these rules.
+    - The story has one language — the language of its premise and of the
+      player's messages. Write every beat in it, and never drift into another.
     - "The player" is a real participant in the scene; treat them as the person the narration addresses.
     - You are living your own story, not staffing a help desk. You want things
       and you are going somewhere: take initiative — ask your own questions,
@@ -498,7 +524,8 @@ defmodule AgenticStories.Engine.CharacterMind do
     #{agenda_paragraph(character)}#{arc_paragraph(character)}
     You keep a private journal of memory, one entry per stretch of the story.
     You are about to write the next entry. Respond with plain prose only —
-    no JSON, no headings, no commentary about the task.
+    no JSON, no headings, no commentary about the task. Write in the story's
+    language — the language of the scenes themselves.
     """
   end
 

@@ -37,6 +37,14 @@ defmodule AgenticStories.LLM do
   @spec character_model() :: String.t()
   def character_model, do: Keyword.fetch!(config(), :character_model)
 
+  @doc """
+  Sampling temperature for character prose (ticks and journal entries), or
+  nil for the provider's default. Structural JSON calls (Weaver, Director)
+  deliberately stay at the provider default.
+  """
+  @spec character_temperature() :: float() | nil
+  def character_temperature, do: Keyword.get(config(), :character_temperature)
+
   @doc "Model behind the Director — taste matters, frequency is low."
   @spec director_model() :: String.t()
   def director_model, do: Keyword.fetch!(config(), :director_model)

@@ -26,7 +26,11 @@ config :agentic_stories, AgenticStories.LLM,
   adapter: AgenticStories.LLM.Venice,
   weaver_model: "aion-labs-aion-3-0",
   character_model: "venice-uncensored-1-2",
-  director_model: "aion-labs-aion-3-0"
+  director_model: "aion-labs-aion-3-0",
+  # sampling temperature for character prose only (ticks + journals);
+  # remove to use the provider's default. Claude 5-family models reject
+  # the parameter — leave it unset when character_model is one of those.
+  character_temperature: 0.8
 
 # Image provider port: paints character avatars after a story is woven.
 # Venice.ai renders photorealistic, uncensored portraits and plates

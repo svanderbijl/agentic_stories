@@ -55,10 +55,32 @@ defmodule AgenticStories.LLM.Claude do
     %{
       model: request.model,
       max_tokens: request.max_tokens,
-      messages: Enum.map(request.messages, &%{role: &1.role, content: content(&1.content)})
+      messages: merge_messages(request.messages)
     }
     |> put_system(request.system)
+    |> put_temperature(request.temperature)
   end
+
+  # Claude 5-family models reject sampling parameters outright — configure a
+  # temperature only alongside a model that still accepts one.
+  defp put_temperature(body, nil), do: body
+  defp put_temperature(body, temperature), do: Map.put(body, :temperature, temperature)
+
+  # The Messages API rejects consecutive same-role messages ("roles must
+  # alternate"), and the engine sends one user message per beat. A run of
+  # same-role messages folds into one message with the blocks concatenated
+  # in order — the same bytes reach the model.
+  defp merge_messages(messages) do
+    messages
+    |> Enum.chunk_by(& &1.role)
+    |> Enum.map(fn
+      [message] -> %{role: message.role, content: content(message.content)}
+      [%{role: role} | _] = run -> %{role: role, content: Enum.flat_map(run, &blocks(&1.content))}
+    end)
+  end
+
+  defp blocks(text) when is_binary(text), do: [%{type: "text", text: text}]
+  defp blocks(list) when is_list(list), do: content(list)
 
   defp content(text) when is_binary(text), do: text
 

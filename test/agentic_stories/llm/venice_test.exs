@@ -114,6 +114,57 @@ defmodule AgenticStories.LLM.VeniceTest do
     assert {:ok, %Response{text: "ok"}} = Venice.chat(request)
   end
 
+  test "folds a run of same-role messages into one turn — a chat template wraps each message" do
+    Req.Test.stub(Venice, fn conn ->
+      {:ok, raw, conn} = Plug.Conn.read_body(conn)
+      body = Jason.decode!(raw)
+
+      assert [_system, %{"role" => "user", "content" => [beat_one, beat_two, instruction]}] =
+               body["messages"]
+
+      assert %{"type" => "text", "text" => "The player: Who's there?\n"} = beat_one
+      refute Map.has_key?(beat_one, "cache_control")
+
+      assert %{"text" => "Maren: Only me.\n", "cache_control" => %{"type" => "ephemeral"}} =
+               beat_two
+
+      assert %{"type" => "text", "text" => "Your move."} = instruction
+
+      Req.Test.json(conn, %{"choices" => [%{"message" => %{"content" => "ok"}}]})
+    end)
+
+    request =
+      request(
+        messages: [
+          %{role: :user, content: [%{text: "The player: Who's there?\n", cache: false}]},
+          %{role: :user, content: [%{text: "Maren: Only me.\n", cache: true}]},
+          %{role: :user, content: "Your move."}
+        ]
+      )
+
+    assert {:ok, %Response{text: "ok"}} = Venice.chat(request)
+  end
+
+  test "sends the temperature only when one is set" do
+    Req.Test.stub(Venice, fn conn ->
+      {:ok, raw, conn} = Plug.Conn.read_body(conn)
+      assert Jason.decode!(raw)["temperature"] == 1.0
+
+      Req.Test.json(conn, %{"choices" => [%{"message" => %{"content" => "ok"}}]})
+    end)
+
+    assert {:ok, _response} = Venice.chat(request(temperature: 1.0))
+
+    Req.Test.stub(Venice, fn conn ->
+      {:ok, raw, conn} = Plug.Conn.read_body(conn)
+      refute Map.has_key?(Jason.decode!(raw), "temperature")
+
+      Req.Test.json(conn, %{"choices" => [%{"message" => %{"content" => "ok"}}]})
+    end)
+
+    assert {:ok, _response} = Venice.chat(request())
+  end
+
   test "omits the system message when the request has none" do
     Req.Test.stub(Venice, fn conn ->
       {:ok, raw, conn} = Plug.Conn.read_body(conn)

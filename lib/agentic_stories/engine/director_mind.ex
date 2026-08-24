@@ -129,6 +129,9 @@ defmodule AgenticStories.Engine.DirectorMind do
     Your principles:
     - Intervene rarely. The story belongs to the player and the cast; you supply
       pressure only when a scene stalls, drifts from the arc, or has earned a turn.
+    - The story has one language — the language of the premise and the record.
+      Every "text", "note", and "caption" you write is in it. The one exception
+      is "illustrate"'s prompt: that goes to an image model, and is always English.
     - The one failure you must never allow: a player left hanging. If the player's
       latest beat has gone unanswered, motion is owed — nudge whoever should
       respond, or narrate the world responding.

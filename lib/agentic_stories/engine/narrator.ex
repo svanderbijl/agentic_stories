@@ -33,8 +33,9 @@ defmodule AgenticStories.Engine.Narrator do
       they were away. Write one or two short sentences, addressed to "you",
       describing only what an arriving person could actually notice — traces,
       residue, aftermath. Never narrate the events themselves, never name who
-      did what, never include dialogue. If the events would leave nothing a
-      newcomer could notice, reply with the single word NOTHING.
+      did what, never include dialogue. Write in the story's language — the
+      language of the beats you are shown. If the events would leave nothing
+      a newcomer could notice, reply with the single word NOTHING.
       """,
       messages: [
         %{
@@ -91,7 +92,8 @@ defmodule AgenticStories.Engine.Narrator do
       the story so far. Describe THE MOMENT THE RECORD ENDS as a single
       photograph, for an illustrator who has read none of it.
 
-      Write a short caption in the story's voice on the first line, like so:
+      Write a short caption in the story's voice and language on the first
+      line, like so:
 
           CAPTION: The stranger takes the beer
 
@@ -105,7 +107,9 @@ defmodule AgenticStories.Engine.Narrator do
 
       Concrete nouns and visible facts only. No dialogue, no names of
       emotions, no backstory, no words about what anyone intends. Never add
-      a person who is not in the list of who is here.
+      a person who is not in the list of who is here. The photograph is for
+      the illustrator: write it in English, whatever language the story is
+      told in.
       """,
       messages: [
         %{
@@ -223,7 +227,8 @@ defmodule AgenticStories.Engine.Narrator do
 
       Address the player as "you". Cover only what they have witnessed. One
       short paragraph, at most 90 words, ending on where things stood when
-      they left. Plain prose only.
+      they left. Plain prose only, in the story's language — the language of
+      the beats you are recapping.
       """,
       messages: [
         %{role: :user, content: CharacterMind.transcript(witnessed_beats)}

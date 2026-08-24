@@ -39,17 +39,36 @@ defmodule AgenticStories.LLM.OpenRouter do
         system -> [%{role: "system", content: [cached_block(system)]}]
       end
 
-    messages =
-      system ++
-        Enum.map(request.messages, &%{role: to_string(&1.role), content: content(&1.content)})
-
     %{
       model: request.model,
       max_tokens: request.max_tokens,
-      messages: messages,
+      messages: system ++ merge_messages(request.messages),
       usage: %{include: true}
     }
+    |> put_temperature(request.temperature)
   end
+
+  # The engine sends one user message per story beat; on the wire a run of
+  # same-role messages folds into ONE turn with the blocks in order — the
+  # downstream model's chat template wraps every message in turn markers,
+  # and a small model handed hundreds of one-line user turns comes apart.
+  defp merge_messages(messages) do
+    messages
+    |> Enum.chunk_by(& &1.role)
+    |> Enum.map(fn
+      [message] ->
+        %{role: to_string(message.role), content: content(message.content)}
+
+      [%{role: role} | _] = run ->
+        %{role: to_string(role), content: Enum.flat_map(run, &blocks(&1.content))}
+    end)
+  end
+
+  defp blocks(text) when is_binary(text), do: [%{type: "text", text: text}]
+  defp blocks(list) when is_list(list), do: content(list)
+
+  defp put_temperature(body, nil), do: body
+  defp put_temperature(body, temperature), do: Map.put(body, :temperature, temperature)
 
   defp content(text) when is_binary(text), do: text
 

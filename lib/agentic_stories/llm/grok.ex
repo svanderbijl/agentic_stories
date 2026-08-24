@@ -36,12 +36,27 @@ defmodule AgenticStories.LLM.Grok do
         system -> [%{role: "system", content: system}]
       end
 
-    messages =
-      system ++
-        Enum.map(request.messages, &%{role: to_string(&1.role), content: flatten(&1.content)})
-
-    %{model: request.model, max_tokens: request.max_tokens, messages: messages}
+    %{
+      model: request.model,
+      max_tokens: request.max_tokens,
+      messages: system ++ merge_messages(request.messages)
+    }
+    |> put_temperature(request.temperature)
   end
+
+  # The engine sends one user message per story beat; on the wire a run of
+  # same-role messages folds into ONE turn, flattened in order — a small
+  # model handed hundreds of one-line user turns comes apart.
+  defp merge_messages(messages) do
+    messages
+    |> Enum.chunk_by(& &1.role)
+    |> Enum.map(fn [%{role: role} | _] = run ->
+      %{role: to_string(role), content: Enum.map_join(run, "", &flatten(&1.content))}
+    end)
+  end
+
+  defp put_temperature(body, nil), do: body
+  defp put_temperature(body, temperature), do: Map.put(body, :temperature, temperature)
 
   defp flatten(text) when is_binary(text), do: text
   defp flatten(blocks) when is_list(blocks), do: Enum.map_join(blocks, "", & &1.text)

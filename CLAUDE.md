@@ -43,7 +43,12 @@ Three boundaries. Keep them clean:
   Message content is a string or a list of `%{text:, cache:}` blocks; the Venice,
   OpenRouter, and Anthropic drivers turn `cache: true` into a `cache_control`
   breakpoint, the Grok driver flattens blocks in order (xAI caching is
-  automatic). The Venice driver always disables `include_venice_system_prompt`
+  automatic). Consecutive messages may share a role (character ticks send one
+  user message per beat); every driver folds such runs into one wire turn —
+  see the prompt-caching section for why. `Request.temperature`
+  is optional — omitted from the wire when nil (`character_temperature` in
+  config sets it for character prose only; Claude 5-family models reject the
+  parameter). The Venice driver always disables `include_venice_system_prompt`
   (Venice would inject its own persona otherwise) and strips thinking from
   responses. The facade is `LLM.chat/2` — always pass `story_id:` and `purpose:`
   so the call lands in the cost ledger (`LLM.Ledger`, `llm_calls` table,
@@ -80,7 +85,10 @@ Three boundaries. Keep them clean:
   for who is present, how they stand, and what they are wearing *by now* (the Director's
   cooldown does not apply — the player asked). The Director's prompt invites plates at real turns; the rate limit is
   code-side (`plate_cooldown_beats` vs `Stories.beats_since_plate/1`), because a model
-  cannot count beats and asking it to only costs tokens.
+  cannot count beats and asking it to only costs tokens. The story has one
+  language (the seed's, enforced in every prose prompt) — but illustrator-facing
+  text (the Director's `illustrate` prompt, the tableau's photograph) is always
+  English, which image models read best; captions follow the story.
 
   **Getting the cast INTO the plate is the whole point of `compose/2`.** Present
   characters' portraits ride along as reference images and the prompt names them in the
@@ -130,8 +138,11 @@ Rules that keep this honest:
 - The reading pane is `Stories.player_messages/1`; a character's working memory is
   `Stories.character_memory/2` (witnessed beats only). A nil location (legacy or failed
   stories) means "witnessed by everyone" — keep that degradation path working.
-- Moves (`Engine.character_move/4`, `Engine.player_move/2`) produce ONE beat with
+- Moves (`Engine.character_move/4`, `Engine.player_move/2..3`) produce ONE beat with
   `witness_location_ids: [origin, destination]` so both rooms see it.
+  `Engine.player_seek/2` is a player_move aimed at a character: the UI shows only
+  "elsewhere" (never where), and the arrival narration reveals the place — you
+  learn where someone went by finding them.
 - **The player is the camera.** A player message that names a character who is
   elsewhere summons them first (`Engine.summon_addressed/2` — whole-name,
   word-bounded), through the same visible move path, BEFORE the message is written —
@@ -180,10 +191,17 @@ Character ticks are shaped for prompt caching on BOTH providers; the win is real
 while the prefix stays byte-stable across ticks:
 
 - The tick prompt is an **append-only prefix**:
-  `[static system] [memory block 1..N, frozen] [raw beats] [instruction]`.
+  `[static system] [memory message, frozen blocks] [one user message per beat]
+  [instruction message]`.
   Static content (persona, agenda, rules, decision format) lives in the system
   prompt; long-term memory is a chain of immutable `CharacterMemory` blocks
-  (append-only — NEVER rewrite one); the transcript is one block per beat.
+  (append-only — NEVER rewrite one) riding as one message; the transcript is
+  **one user message per beat**, so a new beat only ever appends a message.
+  On the wire EVERY driver folds a same-role run into one turn with a block
+  per beat: Anthropic demands alternating turns, and the chat templates
+  behind the OpenAI-compatible providers wrap each message in turn markers —
+  a small model handed hundreds of one-line user turns comes apart
+  (fragments, echoed names, language drift). Don't "simplify" the fold away.
   Breakpoints sit on the last memory block and the newest beat; xAI caches the
   identical byte prefix automatically. Consolidation appends block N+1 and trims the
   raw tail in the same moment, so everything through block N stays cached. Same

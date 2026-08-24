@@ -219,7 +219,7 @@ defmodule AgenticStories.Engine do
   witnessed at both ends, then a fresh charge for whoever is at the
   destination — walking into a room is interaction too.
   """
-  def player_move(%Story{} = story, location_id) do
+  def player_move(%Story{} = story, location_id, narration \\ nil) do
     location = Stories.get_location!(story.id, location_id)
     origin_id = story.player_location_id
 
@@ -232,7 +232,7 @@ defmodule AgenticStories.Engine do
            {:ok, _message} <-
              Stories.create_message(story, %{
                kind: :narration,
-               content: "You make your way to #{location.name}.",
+               content: narration || "You make your way to #{location.name}.",
                location_id: location.id,
                witness_location_ids: [origin_id, location.id]
              }) do
@@ -252,6 +252,30 @@ defmodule AgenticStories.Engine do
         energize_cast(story)
         {:ok, story}
       end
+    end
+  end
+
+  @doc """
+  The player goes looking for a character instead of a place: a move to
+  wherever they are right now. The UI never names the destination — you
+  learn where someone went by finding them, in the arrival narration.
+  A character who is already with the player (or nowhere) is a no-op.
+  """
+  def player_seek(%Story{} = story, character_id) do
+    character = Stories.get_character!(character_id)
+
+    case character.location_id do
+      nil ->
+        {:ok, story}
+
+      location_id ->
+        location = Stories.get_location!(story.id, location_id)
+
+        player_move(
+          story,
+          location_id,
+          "You go looking for #{character.name}, and find them at #{location.name}."
+        )
     end
   end
 

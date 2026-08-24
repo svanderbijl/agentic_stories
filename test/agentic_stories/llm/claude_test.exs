@@ -88,6 +88,58 @@ defmodule AgenticStories.LLM.ClaudeTest do
     assert {:ok, %Response{text: "ok"}} = Claude.chat(request)
   end
 
+  test "folds a run of same-role messages into one — Anthropic requires alternating turns" do
+    Req.Test.stub(Claude, fn conn ->
+      {:ok, raw, conn} = Plug.Conn.read_body(conn)
+      body = Jason.decode!(raw)
+
+      assert [%{"role" => "user", "content" => [beat_one, beat_two, instruction]}] =
+               body["messages"]
+
+      assert %{"type" => "text", "text" => "The player: Who's there?\n"} = beat_one
+      refute Map.has_key?(beat_one, "cache_control")
+
+      assert %{"text" => "Maren: Only me.\n", "cache_control" => %{"type" => "ephemeral"}} =
+               beat_two
+
+      assert %{"type" => "text", "text" => "Your move."} = instruction
+
+      Req.Test.json(conn, %{"content" => [%{"type" => "text", "text" => "ok"}]})
+    end)
+
+    request =
+      request(
+        messages: [
+          %{role: :user, content: [%{text: "The player: Who's there?\n", cache: false}]},
+          %{role: :user, content: [%{text: "Maren: Only me.\n", cache: true}]},
+          %{role: :user, content: "Your move."}
+        ]
+      )
+
+    assert {:ok, %Response{text: "ok"}} = Claude.chat(request)
+  end
+
+  test "sends the temperature only when one is set" do
+    Req.Test.stub(Claude, fn conn ->
+      {:ok, raw, conn} = Plug.Conn.read_body(conn)
+      body = Jason.decode!(raw)
+      assert body["temperature"] == 0.9
+
+      Req.Test.json(conn, %{"content" => [%{"type" => "text", "text" => "ok"}]})
+    end)
+
+    assert {:ok, _response} = Claude.chat(request(temperature: 0.9))
+
+    Req.Test.stub(Claude, fn conn ->
+      {:ok, raw, conn} = Plug.Conn.read_body(conn)
+      refute Map.has_key?(Jason.decode!(raw), "temperature")
+
+      Req.Test.json(conn, %{"content" => [%{"type" => "text", "text" => "ok"}]})
+    end)
+
+    assert {:ok, _response} = Claude.chat(request())
+  end
+
   test "joins multiple text blocks and ignores other block types" do
     Req.Test.stub(Claude, fn conn ->
       Req.Test.json(conn, %{

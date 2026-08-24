@@ -66,6 +66,7 @@ defmodule AgenticStories.Engine.CharacterMindTest do
 
       assert_received {:request, request}
       assert request.model == LLM.character_model()
+      assert request.temperature == LLM.character_temperature()
       # everything static — persona, places, and the decision format —
       # lives in the cacheable system prompt
       assert request.system =~ "You are Maren"
@@ -78,17 +79,17 @@ defmodule AgenticStories.Engine.CharacterMindTest do
       # the tick asks for prose, never for JSON
       refute request.system =~ ~s({"do":)
 
-      # the transcript rides as one block per beat, breakpoint on the last
-      # beat, with only the volatile instruction after it
-      assert [%{role: :user, content: blocks}] = request.messages
-      {transcript, [instruction]} = Enum.split(blocks, -1)
+      # each beat is its own user message, breakpoint on the newest beat,
+      # with only the volatile instruction message after it
+      assert Enum.all?(request.messages, &(&1.role == :user))
+      {transcript, [%{content: [instruction]}]} = Enum.split(request.messages, -1)
 
-      assert Enum.map(transcript, & &1.text) == [
+      assert Enum.map(transcript, fn %{content: [block]} -> block.text end) == [
                "The player: Who's there?\n",
                "Maren: The wind, probably.\n"
              ]
 
-      assert Enum.map(transcript, & &1.cache) == [false, true]
+      assert Enum.map(transcript, fn %{content: [block]} -> block.cache end) == [false, true]
       assert instruction.cache == false
       assert instruction.text =~ "You are at: The Lamp Room."
       assert instruction.text =~ "The player last spoke 1 beats ago."
@@ -114,8 +115,7 @@ defmodule AgenticStories.Engine.CharacterMindTest do
       assert request.system =~ "From gatekeeper to confessor."
       assert request.system =~ "let it pull you forward"
 
-      assert [%{role: :user, content: blocks}] = request.messages
-      instruction = List.last(blocks)
+      assert %{content: [instruction]} = List.last(request.messages)
       assert instruction.text =~ "Say it now."
     end
 
@@ -126,8 +126,7 @@ defmodule AgenticStories.Engine.CharacterMindTest do
       assert :wait = CharacterMind.decide(story(), character(), [], messages, locations())
 
       assert_received {:request, request}
-      assert [%{role: :user, content: blocks}] = request.messages
-      instruction = List.last(blocks)
+      assert %{content: [instruction]} = List.last(request.messages)
       assert instruction.text =~ "talking to YOU, directly"
       assert instruction.text =~ "Waiting is not"
     end
@@ -144,8 +143,8 @@ defmodule AgenticStories.Engine.CharacterMindTest do
                )
 
       assert_received {:request, request}
-      assert [%{role: :user, content: blocks}] = request.messages
-      assert List.last(blocks).text =~ "talking to YOU, directly"
+      assert %{content: [instruction]} = List.last(request.messages)
+      assert instruction.text =~ "talking to YOU, directly"
     end
 
     test "frozen memory blocks lead the content, breakpointed, never in the system prompt" do
@@ -162,8 +161,8 @@ defmodule AgenticStories.Engine.CharacterMindTest do
       assert_received {:request, request}
       refute request.system =~ "The door was not on my lists."
 
-      assert [%{role: :user, content: blocks}] = request.messages
-      [header, first, second | rest] = blocks
+      assert [memory, beat_message, _instruction] = request.messages
+      assert [header, first, second] = memory.content
 
       assert header.text =~ "What you remember from earlier"
       assert first.text =~ "The door was not on my lists."
@@ -172,7 +171,7 @@ defmodule AgenticStories.Engine.CharacterMindTest do
       assert first.cache == false
       assert second.cache == true
 
-      [beat, _instruction] = rest
+      assert [beat] = beat_message.content
       assert beat.text == "The player: Still here?\n"
       assert beat.cache == true
     end
@@ -268,9 +267,20 @@ defmodule AgenticStories.Engine.CharacterMindTest do
       # the reading pane draws its own dialogue dash
       assert {:ok, {:say, ^spoken}} = CharacterMind.parse_decision("— " <> spoken, "Maren")
 
+      # dash and name arrive framed together, in either order and either dash
+      assert {:ok, {:say, ^spoken}} = CharacterMind.parse_decision("- Maren: " <> spoken, "Maren")
+      assert {:ok, {:say, ^spoken}} = CharacterMind.parse_decision("-Maren: " <> spoken, "Maren")
+      assert {:ok, {:say, ^spoken}} = CharacterMind.parse_decision("— Maren: " <> spoken, "Maren")
+      assert {:ok, {:say, ^spoken}} = CharacterMind.parse_decision("Maren: — " <> spoken, "Maren")
+
       # a colon that is part of the beat survives
       assert {:ok, {:say, ~s(She turns. "Listen: I told you already.")}} =
                CharacterMind.parse_decision(~s(She turns. "Listen: I told you already."), "Maren")
+    end
+
+    test "a stripped leading dash never eats the move arrow" do
+      assert {:ok, {:move, "The Shore", "she takes the stairs"}} =
+               CharacterMind.parse_decision("-> The Shore: she takes the stairs", "Maren")
     end
 
     test "prose with nothing spoken is an act" do

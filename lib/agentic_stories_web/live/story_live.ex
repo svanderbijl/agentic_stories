@@ -83,6 +83,16 @@ defmodule AgenticStoriesWeb.StoryLive do
     end
   end
 
+  def handle_event("seek", %{"id" => id}, socket) do
+    with %Story{status: :live} = story <- socket.assigns.story,
+         {id, ""} <- Integer.parse(id),
+         {:ok, %Story{}} <- Engine.player_seek(story, id) do
+      {:noreply, socket}
+    else
+      _ -> {:noreply, socket}
+    end
+  end
+
   def handle_event("end_story", _params, socket) do
     {:ok, _story} = Engine.end_story(socket.assigns.story)
     {:noreply, socket}
@@ -270,6 +280,7 @@ defmodule AgenticStoriesWeb.StoryLive do
                   here={here?(character, @story)}
                   thinking={MapSet.member?(@thinking, character.id)}
                   max_energy={@max_energy}
+                  seekable={@story.status == :live}
                 />
                 <.location_card
                   :for={location <- @locations}
@@ -416,6 +427,7 @@ defmodule AgenticStoriesWeb.StoryLive do
               here={here?(character, @story)}
               thinking={MapSet.member?(@thinking, character.id)}
               max_energy={@max_energy}
+              seekable={@story.status == :live}
             />
           </div>
 

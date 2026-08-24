@@ -221,6 +221,31 @@ defmodule AgenticStories.EngineTest do
       assert %{energy: 6} = :sys.get_state(pid)
     end
 
+    test "player_seek finds a wandered character, revealing where they were", ctx do
+      away = character_fixture(ctx.story, %{name: "Maren", energy: 0, location_id: ctx.shore.id})
+      Stories.subscribe(ctx.story.id)
+
+      assert {:ok, %Story{player_location_id: shore_id}} = Engine.player_seek(ctx.story, away.id)
+      assert shore_id == ctx.shore.id
+
+      assert_receive {:message_created,
+                      %Message{
+                        kind: :narration,
+                        content: "You go looking for Maren, and find them at The Shore.",
+                        witnessed_by_player: true
+                      }}
+    end
+
+    test "player_seek is a quiet no-op when the character is with you, or nowhere", ctx do
+      here = character_fixture(ctx.story, %{name: "Maren", location_id: ctx.lamp_room.id})
+
+      assert {:ok, %Story{player_location_id: origin}} = Engine.player_seek(ctx.story, here.id)
+      assert origin == ctx.story.player_location_id
+
+      lost = character_fixture(ctx.story, %{name: "Old Tosk", location_id: nil})
+      assert {:ok, %Story{}} = Engine.player_seek(ctx.story, lost.id)
+    end
+
     test "character_move records one beat witnessed at both ends and relocates", ctx do
       character =
         character_fixture(ctx.story, %{name: "Maren", energy: 4, location_id: ctx.shore.id})

@@ -285,12 +285,14 @@ defmodule AgenticStoriesWeb.StoryComponents do
 
   @doc """
   The full introduction to a cast member: portrait, name, presence, who they
-  are, and how they talk.
+  are, and how they talk. A character who is elsewhere can be sought out —
+  the card never says where they are; the arrival narration does.
   """
   attr :character, Character, required: true
   attr :max_energy, :integer, required: true
   attr :here, :boolean, default: true
   attr :thinking, :boolean, default: false
+  attr :seekable, :boolean, default: false
 
   def cast_card(assigns) do
     ~H"""
@@ -314,9 +316,18 @@ defmodule AgenticStoriesWeb.StoryComponents do
           </p>
           <p
             :if={!@here}
-            class="mt-0.5 font-mono text-[9px] tracking-[0.18em] text-ink-faint/70 uppercase"
+            class="mt-0.5 flex items-center gap-2.5 font-mono text-[9px] tracking-[0.18em] text-ink-faint/70 uppercase"
           >
             elsewhere
+            <button
+              :if={@seekable}
+              phx-click="seek"
+              phx-value-id={@character.id}
+              title={"Go looking for #{@character.name}"}
+              class="cursor-pointer text-ink-faint transition-colors hover:text-ember"
+            >
+              seek out <span aria-hidden="true">→</span>
+            </button>
           </p>
         </div>
       </div>

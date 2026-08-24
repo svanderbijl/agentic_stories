@@ -82,6 +82,34 @@ defmodule AgenticStories.LLM.GrokTest do
     assert {:ok, %Response{text: "ok"}} = Grok.chat(request)
   end
 
+  test "folds a run of same-role messages into one turn, flattened in order" do
+    Req.Test.stub(Grok, fn conn ->
+      {:ok, raw, conn} = Plug.Conn.read_body(conn)
+      body = Jason.decode!(raw)
+
+      assert [
+               _system,
+               %{
+                 "role" => "user",
+                 "content" => "The player: Who's there?\nMaren: Only me.\nYour move."
+               }
+             ] = body["messages"]
+
+      Req.Test.json(conn, %{"choices" => [%{"message" => %{"content" => "ok"}}]})
+    end)
+
+    request =
+      request(
+        messages: [
+          %{role: :user, content: [%{text: "The player: Who's there?\n", cache: false}]},
+          %{role: :user, content: [%{text: "Maren: Only me.\n", cache: true}]},
+          %{role: :user, content: "Your move."}
+        ]
+      )
+
+    assert {:ok, %Response{text: "ok"}} = Grok.chat(request)
+  end
+
   test "omits the system message when the request has none" do
     Req.Test.stub(Grok, fn conn ->
       {:ok, raw, conn} = Plug.Conn.read_body(conn)
