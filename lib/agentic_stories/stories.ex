@@ -196,7 +196,11 @@ defmodule AgenticStories.Stories do
     end
   end
 
+  # Reload so a changeset that just wrote an image binary doesn't broadcast
+  # it — load_in_query: false only applies to a fresh query, not to the
+  # struct Ecto returns from update.
   defp broadcast_story({:ok, %Story{} = story}) do
+    story = Repo.reload!(story)
     broadcast(story.id, {:story_updated, story})
     {:ok, story}
   end
@@ -225,12 +229,73 @@ defmodule AgenticStories.Stories do
     |> broadcast_character()
   end
 
+  def put_character_board(%Character{} = character, binary, content_type) do
+    character
+    |> Character.board_changeset(binary, content_type)
+    |> Repo.update()
+    |> broadcast_character()
+  end
+
+  @doc """
+  Stores the player's likeness for plates and the "You" card. The binary
+  stays off the story struct (`load_in_query: false`); fetch it with
+  `get_player_avatar/1`. Broadcasts so the card can show the portrait
+  as it lands.
+  """
+  def put_player_avatar(%Story{} = story, binary, content_type) do
+    story
+    |> Story.player_avatar_changeset(binary, content_type)
+    |> Repo.update()
+    |> broadcast_story()
+  end
+
+  @doc """
+  Stores the player's character-design sheet. Same load rules as the
+  portrait; fetch with `get_player_board/1`.
+  """
+  def put_player_board(%Story{} = story, binary, content_type) do
+    story
+    |> Story.player_board_changeset(binary, content_type)
+    |> Repo.update()
+    |> broadcast_story()
+  end
+
+  @doc "The player's plate-reference portrait, or nil."
+  def get_player_avatar(story_id) do
+    query =
+      from s in Story,
+        where: s.id == ^story_id and not is_nil(s.player_avatar_type),
+        select: {s.player_avatar, s.player_avatar_type}
+
+    Repo.one(query)
+  end
+
+  @doc "The player's character-design sheet, or nil."
+  def get_player_board(story_id) do
+    query =
+      from s in Story,
+        where: s.id == ^story_id and not is_nil(s.player_board_type),
+        select: {s.player_board, s.player_board_type}
+
+    Repo.one(query)
+  end
+
   @doc "The avatar image for a character, or nil — the binary is loaded only here."
   def get_avatar(character_id) do
     query =
       from c in Character,
         where: c.id == ^character_id and not is_nil(c.avatar_type),
         select: {c.avatar, c.avatar_type}
+
+    Repo.one(query)
+  end
+
+  @doc "The character-design sheet for a character, or nil."
+  def get_board(character_id) do
+    query =
+      from c in Character,
+        where: c.id == ^character_id and not is_nil(c.board_type),
+        select: {c.board, c.board_type}
 
     Repo.one(query)
   end
@@ -456,8 +521,53 @@ defmodule AgenticStories.Stories do
     end
   end
 
+  @doc """
+  The story fills in a place it so far knew only by name — a character walked
+  somewhere unheard-of and opened it bare; a later reveal supplies what it
+  is. Never overwrites a description a place already has.
+  """
+  def describe_location(%Location{description: nil} = location, description)
+      when is_binary(description) do
+    location
+    |> Location.changeset(%{description: description})
+    |> Repo.update()
+    |> case do
+      {:ok, location} ->
+        broadcast(location.story_id, {:location_updated, location})
+        {:ok, location}
+
+      error ->
+        error
+    end
+  end
+
+  def describe_location(%Location{} = location, _description), do: {:ok, location}
+
   def get_location!(story_id, id) do
     Repo.one!(from l in Location, where: l.story_id == ^story_id and l.id == ^id)
+  end
+
+  @doc """
+  How the player looks now in the fiction. Overwrites a previous snapshot;
+  the next plate reads this instead of the woven protagonist clothes.
+  """
+  def describe_player(%Story{} = story, appearance) when is_binary(appearance) do
+    story
+    |> Ecto.Changeset.change(player_appearance: appearance)
+    |> Repo.update()
+    |> broadcast_story()
+  end
+
+  @doc """
+  The story changes how a character looks — a new dress, a wound, a
+  correction of the weave. Overwrites the previous appearance; the next
+  portrait and the character's own mind both read from this.
+  """
+  def describe_character(%Character{} = character, appearance) when is_binary(appearance) do
+    character
+    |> Character.changeset(%{appearance: appearance})
+    |> Repo.update()
+    |> broadcast_character()
   end
 
   def relocate_character(%Character{} = character, location_id) do

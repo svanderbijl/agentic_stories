@@ -153,6 +153,10 @@ defmodule AgenticStories.Engine.CharacterMind do
       "..." somewhere in the prose     say — someone spoke in this beat
       anything else                    act — a beat with nothing spoken
 
+  The arrow line may sit anywhere in the reply, not only at its head — a
+  model telling a story writes its paragraphs first and the arrow where the
+  walking happens. The surrounding prose is the beat; the marker is not.
+
   Beats are third-person prose either way; the quotation marks are what tell
   a spoken beat from a silent one, and `:say` is what the collision guard and
   the chatter torch key on. A wholly asterisked line is still read as an act:
@@ -180,7 +184,8 @@ defmodule AgenticStories.Engine.CharacterMind do
 
   def parse_decision(_text, _name), do: :error
 
-  @move ~r/\A(?:->|=>|→)\s*([^:\n]+?)\s*(?::\s*(.*))?\z/s
+  # one line of a reply: an arrow, a place, optionally a colon and prose
+  @move ~r/\A(?:->|=>|→)\s*([^:\n]+?)\s*(?::\s*(.*))?\z/
   @gesture ~r/\A\*+\s*(.+?)\s*\*+\z/s
   @silence ~w(silence wait nothing none pass)
 
@@ -189,9 +194,8 @@ defmodule AgenticStories.Engine.CharacterMind do
       String.downcase(text) in @silence ->
         :wait
 
-      match = Regex.run(@move, text) ->
-        [destination | rest] = tl(match)
-        {:move, String.trim(destination), List.first(rest) |> blank_to_nil()}
+      move = read_move(text) ->
+        move
 
       match = Regex.run(@gesture, text) ->
         {:act, List.last(match)}
@@ -204,10 +208,42 @@ defmodule AgenticStories.Engine.CharacterMind do
     end
   end
 
-  # Quotation marks are the only signal that words were said out loud in a
-  # beat that is otherwise narration. Two marks of any flavour will do —
-  # a single stray one is punctuation, not speech.
-  defp spoken?(text) do
+  # The documented form opens the reply with the arrow, but a model deep in
+  # its prose writes the paragraphs first and the arrow where the walking
+  # happens. Wherever the arrow line sits, the reply is a departure: the
+  # prose around it is the beat, and the marker itself never reaches the
+  # story as literal text.
+  defp read_move(text) do
+    {prose_before, rest} =
+      text
+      |> String.split("\n")
+      |> Enum.split_while(&(Regex.run(@move, String.trim(&1)) == nil))
+
+    case rest do
+      [] ->
+        nil
+
+      [arrow | prose_after] ->
+        [destination | tail] = tl(Regex.run(@move, String.trim(arrow)))
+
+        prose =
+          (prose_before ++ [List.first(tail, "")] ++ prose_after)
+          |> Enum.join("\n")
+          |> String.trim()
+
+        {:move, String.trim(destination), blank_to_nil(prose)}
+    end
+  end
+
+  @doc """
+  Quotation marks are the only signal that words were said out loud in a
+  beat that is otherwise narration. Two marks of any flavour will do —
+  a single stray one is punctuation, not speech. Public because a beat that
+  speaks *and* leaves is still a `:say` (torch, guards), and the move path
+  needs the same reading.
+  """
+  @spec spoken?(String.t()) :: boolean()
+  def spoken?(text) do
     length(Regex.scan(~r/["“”«»]/u, text)) >= 2
   end
 

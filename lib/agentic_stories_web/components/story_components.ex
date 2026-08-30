@@ -9,7 +9,9 @@ defmodule AgenticStoriesWeb.StoryComponents do
   use Phoenix.Component
   use AgenticStoriesWeb, :verified_routes
 
-  alias AgenticStories.Stories.{Character, Location, Message}
+  import AgenticStoriesWeb.CoreComponents, only: [icon: 1]
+
+  alias AgenticStories.Stories.{Character, Location, Message, Story}
 
   @doc """
   A chat-style multiline textarea. Enter submits the surrounding form,
@@ -229,7 +231,7 @@ defmodule AgenticStoriesWeb.StoryComponents do
   def avatar(%{character: %Character{avatar_type: type}} = assigns) when is_binary(type) do
     ~H"""
     <img
-      src={~p"/avatars/#{@character.id}"}
+      src={~p"/avatars/#{@character.id}?v=#{DateTime.to_unix(@character.updated_at)}"}
       alt={"Portrait of #{@character.name}"}
       loading="lazy"
       class={["shrink-0 rounded-full border border-edge object-cover", @class]}
@@ -261,6 +263,7 @@ defmodule AgenticStoriesWeb.StoryComponents do
   attr :max_energy, :integer, required: true
   attr :here, :boolean, default: true
   attr :thinking, :boolean, default: false
+  attr :id_prefix, :string, default: "chip"
 
   def cast_chip(assigns) do
     ~H"""
@@ -271,7 +274,11 @@ defmodule AgenticStoriesWeb.StoryComponents do
       ]}
       title={@character.persona}
     >
-      <.avatar character={@character} class="size-4 text-[8px]" />
+      <.board_avatar
+        character={@character}
+        id_prefix={@id_prefix}
+        class="size-4 text-[8px]"
+      />
       {@character.name}
       <span :if={@thinking} class="animate-pulse text-ember" aria-label="thinking">✎</span>
       <span
@@ -293,12 +300,17 @@ defmodule AgenticStoriesWeb.StoryComponents do
   attr :here, :boolean, default: true
   attr :thinking, :boolean, default: false
   attr :seekable, :boolean, default: false
+  attr :id_prefix, :string, default: "cast"
 
   def cast_card(assigns) do
     ~H"""
     <div class={["rounded-xl border border-edge bg-paper-raised p-4", !@here && "opacity-75"]}>
       <div class="flex items-center gap-3">
-        <.avatar character={@character} class="size-12 text-lg" />
+        <.board_avatar
+          character={@character}
+          id_prefix={@id_prefix}
+          class="size-12 text-lg"
+        />
         <div class="min-w-0">
           <h3 class="truncate font-display text-base font-semibold text-ink">
             {@character.name}
@@ -380,6 +392,187 @@ defmodule AgenticStoriesWeb.StoryComponents do
     </div>
     """
   end
+
+  attr :character, Character, required: true
+  attr :id_prefix, :string, required: true
+  attr :class, :string, default: "size-8"
+
+  defp board_avatar(%{character: %Character{board_type: type}} = assigns) when is_binary(type) do
+    ~H"""
+    <button
+      type="button"
+      id={"#{@id_prefix}-board-#{@character.id}"}
+      phx-click="show_board"
+      phx-value-id={@character.id}
+      title={"#{@character.name}'s character sheet"}
+      aria-label={"#{@character.name}'s character sheet"}
+      class="cursor-pointer rounded-full transition duration-200 hover:ring-2 hover:ring-ember/60 focus:ring-2 focus:ring-ember/60 focus:outline-none active:scale-95"
+    >
+      <.avatar character={@character} class={@class} />
+    </button>
+    """
+  end
+
+  defp board_avatar(assigns) do
+    ~H"""
+    <.avatar character={@character} class={@class} />
+    """
+  end
+
+  @doc """
+  The player's own card: portrait, "You", and who the story says they are.
+  Clicking the portrait opens their character sheet, same as the cast.
+  """
+  attr :story, Story, required: true
+  attr :id_prefix, :string, default: "player"
+
+  def player_card(assigns) do
+    ~H"""
+    <div class="rounded-xl border border-ember/30 bg-paper-raised p-4">
+      <div class="flex items-center gap-3">
+        <button
+          :if={@story.player_board_type}
+          type="button"
+          id={"#{@id_prefix}-board"}
+          phx-click="show_board"
+          phx-value-id="player"
+          title="Your character sheet"
+          aria-label="Your character sheet"
+          class="cursor-pointer rounded-full transition duration-200 hover:ring-2 hover:ring-ember/60 focus:ring-2 focus:ring-ember/60 focus:outline-none active:scale-95"
+        >
+          <.player_avatar story={@story} class="size-12 text-lg" />
+        </button>
+        <.player_avatar :if={!@story.player_board_type} story={@story} class="size-12 text-lg" />
+        <div class="min-w-0">
+          <h3 class="truncate font-display text-base font-semibold text-ink">You</h3>
+          <p class="mt-0.5 font-mono text-[9px] tracking-[0.18em] text-ink-faint uppercase">
+            the player
+          </p>
+        </div>
+      </div>
+      <p
+        :if={@story.protagonist}
+        class="mt-3 font-serif text-[13px] leading-relaxed text-ink-soft"
+      >
+        {@story.protagonist}
+      </p>
+    </div>
+    """
+  end
+
+  attr :story, Story, required: true
+  attr :class, :string, default: "size-8"
+
+  def player_avatar(%{story: %Story{player_avatar_type: type}} = assigns) when is_binary(type) do
+    ~H"""
+    <img
+      src={~p"/player-avatars/#{@story.id}?v=#{DateTime.to_unix(@story.updated_at)}"}
+      alt="Portrait of you"
+      loading="lazy"
+      class={["shrink-0 rounded-full border border-edge object-cover", @class]}
+    />
+    """
+  end
+
+  def player_avatar(assigns) do
+    ~H"""
+    <span
+      aria-hidden="true"
+      class={[
+        "grid shrink-0 place-items-center rounded-full border border-edge bg-ember-soft",
+        "font-display font-semibold text-ember",
+        @class
+      ]}
+    >
+      Y
+    </span>
+    """
+  end
+
+  @doc "Lightbox for a character-design sheet. Click the backdrop or press Escape to close."
+  attr :board, :any, required: true
+  attr :story, Story, required: true
+  attr :characters, :list, required: true
+
+  def board_modal(assigns) do
+    assigns =
+      assign(assigns, :subject, board_subject(assigns.board, assigns.story, assigns.characters))
+
+    ~H"""
+    <div
+      :if={@subject}
+      id="board-modal"
+      class="fixed inset-0 z-50 grid place-items-center p-3 sm:p-8"
+      phx-window-keydown="hide_board"
+      phx-key="Escape"
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="board-modal-title"
+    >
+      <div
+        class="absolute inset-0 bg-ink/75 backdrop-blur-[2px] transition-opacity"
+        phx-click="hide_board"
+      >
+      </div>
+      <figure class="relative z-10 flex max-h-[92vh] w-full max-w-6xl flex-col overflow-hidden rounded-2xl border border-edge bg-paper shadow-[0_24px_80px_-24px_oklch(24%_0.02_75_/_0.55)]">
+        <div class="flex shrink-0 items-center justify-between gap-3 border-b border-edge/70 px-4 py-3 sm:px-5">
+          <div class="min-w-0">
+            <p class="font-mono text-[9px] tracking-[0.28em] text-ink-faint uppercase">
+              Character sheet
+            </p>
+            <h2
+              id="board-modal-title"
+              class="truncate font-display text-lg font-semibold tracking-tight text-ink"
+            >
+              {@subject.name}
+            </h2>
+          </div>
+          <button
+            type="button"
+            id="board-modal-close"
+            phx-click="hide_board"
+            aria-label="Close character sheet"
+            class="grid size-8 cursor-pointer place-items-center rounded-full text-ink-faint transition hover:bg-ember-soft hover:text-ink"
+          >
+            <.icon name="hero-x-mark" class="size-5" />
+          </button>
+        </div>
+        <div class="min-h-0 flex-1 overflow-auto bg-paper p-2 sm:p-4">
+          <img
+            id="board-modal-image"
+            src={@subject.src}
+            alt={@subject.alt}
+            class="mx-auto max-h-[78vh] w-full rounded-lg object-contain"
+          />
+        </div>
+      </figure>
+    </div>
+    """
+  end
+
+  defp board_subject(:player, %Story{} = story, _characters) do
+    %{
+      name: "You",
+      src: ~p"/player-boards/#{story.id}?v=#{DateTime.to_unix(story.updated_at)}",
+      alt: "Your character sheet"
+    }
+  end
+
+  defp board_subject({:character, id}, _story, characters) do
+    case Enum.find(characters, &(&1.id == id)) do
+      %Character{board_type: type} = character when is_binary(type) ->
+        %{
+          name: character.name,
+          src: ~p"/boards/#{character.id}?v=#{DateTime.to_unix(character.updated_at)}",
+          alt: "#{character.name}'s character sheet"
+        }
+
+      _ ->
+        nil
+    end
+  end
+
+  defp board_subject(_, _, _), do: nil
 
   defp presence(%Character{energy: energy}, max_energy) do
     Float.round(0.25 + 0.75 * min(energy, max_energy) / max_energy, 2)

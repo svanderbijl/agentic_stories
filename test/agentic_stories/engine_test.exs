@@ -11,7 +11,7 @@ defmodule AgenticStories.EngineTest do
   alias AgenticStories.LLM
   alias AgenticStories.LLM.Response
   alias AgenticStories.Stories
-  alias AgenticStories.Stories.{Message, Story}
+  alias AgenticStories.Stories.{Character, Message, Story}
 
   setup :set_mox_global
   setup :verify_on_exit!
@@ -31,7 +31,13 @@ defmodule AgenticStories.EngineTest do
                "opening" => "The tide pulls back.",
                "opening_location" => "The Shore",
                "locations" => [%{"name" => "The Shore", "description" => "Wet shingle."}],
-               "characters" => [%{"name" => "Maren", "persona" => "The keeper's sister."}]
+               "characters" => [
+                 %{
+                   "name" => "Maren",
+                   "persona" => "The keeper's sister.",
+                   "appearance" => "Wind-burned, dark braid, a coat two sizes too big."
+                 }
+               ]
              })
          }}
       end)
@@ -415,6 +421,77 @@ defmodule AgenticStories.EngineTest do
 
       assert Stories.get_character!(wanderer.id).location_id == caves.id
     end
+
+    test "the Director may change how a character looks, and a running agent follows", ctx do
+      wanderer =
+        character_fixture(ctx.story, %{
+          name: "Maren",
+          energy: 0,
+          location_id: ctx.lamp_room.id,
+          appearance: "Wind-burned, dark braid, a coat two sizes too big."
+        })
+
+      pid = start_supervised!({CharacterAgent, character: wanderer, story: ctx.story})
+      Stories.subscribe(ctx.story.id)
+
+      assert :ok =
+               Engine.apply_direction(
+                 ctx.story,
+                 {:looks, "Maren", "dark braid, a red silk dress, the coat gone",
+                  "steps out of the coat and into the dress"},
+                 Stories.list_characters(ctx.story.id),
+                 Stories.list_locations(ctx.story.id)
+               )
+
+      assert_receive {:message_created,
+                      %Message{
+                        kind: :act,
+                        content: "steps out of the coat and into the dress",
+                        witnessed_by_player: true
+                      }}
+
+      assert Stories.get_character!(wanderer.id).appearance ==
+               "dark braid, a red silk dress, the coat gone"
+
+      assert %{character: %{appearance: appearance}} = :sys.get_state(pid)
+      assert appearance == "dark braid, a red silk dress, the coat gone"
+    end
+
+    test "a Director looks change with no beat still updates the character; an unknown name is a no-op",
+         ctx do
+      wanderer =
+        character_fixture(ctx.story, %{
+          name: "Maren",
+          location_id: ctx.lamp_room.id,
+          appearance: "a coat two sizes too big."
+        })
+
+      Stories.subscribe(ctx.story.id)
+      characters = Stories.list_characters(ctx.story.id)
+      locations = Stories.list_locations(ctx.story.id)
+
+      assert :ok =
+               Engine.apply_direction(
+                 ctx.story,
+                 {:looks, "Nobody Here", "a red dress", nil},
+                 characters,
+                 locations
+               )
+
+      refute_receive {:message_created, _message}, 50
+      assert Stories.get_character!(wanderer.id).appearance == "a coat two sizes too big."
+
+      assert :ok =
+               Engine.apply_direction(
+                 ctx.story,
+                 {:looks, "Maren", "a red silk dress", nil},
+                 characters,
+                 locations
+               )
+
+      refute_receive {:message_created, %Message{kind: :act}}, 50
+      assert Stories.get_character!(wanderer.id).appearance == "a red silk dress"
+    end
   end
 
   describe "scene plates" do
@@ -436,7 +513,7 @@ defmodule AgenticStories.EngineTest do
       %{story: story, lamp_room: lamp_room, shore: shore}
     end
 
-    test "present characters ride along as portrait references", ctx do
+    test "present characters ride along as sheet references", ctx do
       character =
         character_fixture(ctx.story, %{
           name: "Old Tosk",
@@ -445,14 +522,23 @@ defmodule AgenticStories.EngineTest do
         })
 
       {:ok, _} = Stories.put_character_avatar(character, <<255, 216, 255>>, "image/jpeg")
+      {:ok, _} = Stories.put_character_board(character, <<9, 9, 9>>, "image/jpeg")
 
+      # Venice multi-edit treats image 1 as the canvas. That slot has to be
+      # a person (the sheet): a generated scene there is how two plates grow
+      # two casts. Clothing still comes from the scene, not from the board.
       expect(AgenticStories.Imagery.Mock, :compose, fn prompt, references ->
         assert prompt =~ "The Shore — Wet shingle."
-        # the cast is named in the order their portraits were sent, so the
-        # edit model can tell which source image is whom
-        assert prompt =~ "source image 1: Old Tosk"
+        assert prompt =~ "source image 1: Old Tosk — Weathered, salt-white beard, oilskin coat."
+        assert prompt =~ "character reference sheet"
+        assert prompt =~ "FRONT VIEW"
         assert prompt =~ "same faces"
-        assert [%{binary: <<255, 216, 255>>, content_type: "image/jpeg"}] = references
+        assert prompt =~ "Clothing"
+        assert prompt =~ "Nobody looks at the camera"
+        assert prompt =~ "mid-action"
+        assert prompt =~ "The tide turns."
+        assert prompt =~ "- the player"
+        assert [%{binary: <<9, 9, 9>>, content_type: "image/jpeg"}] = references
         {:ok, %{binary: <<1, 2, 3>>, content_type: "image/jpeg"}}
       end)
 
@@ -464,6 +550,99 @@ defmodule AgenticStories.EngineTest do
                      1_000
     end
 
+    test "a portrait is the fallback when no sheet has been painted yet", ctx do
+      character =
+        character_fixture(ctx.story, %{
+          name: "Old Tosk",
+          location_id: ctx.shore.id,
+          appearance: "Weathered, salt-white beard, oilskin coat."
+        })
+
+      {:ok, _} = Stories.put_character_avatar(character, <<255, 216, 255>>, "image/jpeg")
+
+      expect(AgenticStories.Imagery.Mock, :compose, fn _prompt, references ->
+        assert [%{binary: <<255, 216, 255>>, content_type: "image/jpeg"}] = references
+        {:ok, %{binary: <<1, 2, 3>>, content_type: "image/jpeg"}}
+      end)
+
+      assert :ok = Engine.commission_plate(ctx.story, ctx.shore, "The Shore", "The tide turns.")
+
+      assert_receive {:message_created, %Message{kind: :illustration, content: "The Shore"}},
+                     1_000
+    end
+
+    test "the player's sheet leads the compose so their face stays put", ctx do
+      {:ok, story} =
+        ctx.story
+        |> Ecto.Changeset.change(
+          protagonist: "Jack, salt in his hair, the keeper's coat still on."
+        )
+        |> AgenticStories.Repo.update()
+
+      {:ok, story} = Stories.put_player_avatar(story, <<1, 2, 3>>, "image/jpeg")
+      {:ok, story} = Stories.put_player_board(story, <<4, 5, 6>>, "image/jpeg")
+
+      character =
+        character_fixture(story, %{
+          name: "Old Tosk",
+          location_id: ctx.shore.id,
+          appearance: "Weathered, salt-white beard, oilskin coat."
+        })
+
+      {:ok, _} = Stories.put_character_avatar(character, <<255, 216, 255>>, "image/jpeg")
+      {:ok, _} = Stories.put_character_board(character, <<7, 8, 9>>, "image/jpeg")
+
+      expect(AgenticStories.Imagery.Mock, :compose, fn prompt, references ->
+        assert [
+                 %{binary: <<4, 5, 6>>, content_type: "image/jpeg"},
+                 %{binary: <<7, 8, 9>>, content_type: "image/jpeg"}
+               ] = references
+
+        assert prompt =~ "source image 1: the player — Jack, salt in his hair"
+        assert prompt =~ "source image 2: Old Tosk — Weathered, salt-white beard, oilskin coat."
+        refute prompt =~ "- the player\n"
+        {:ok, %{binary: <<9>>, content_type: "image/jpeg"}}
+      end)
+
+      assert :ok = Engine.commission_plate(story, ctx.shore, "The Shore", "The tide turns.")
+
+      assert_receive {:message_created, %Message{kind: :illustration, content: "The Shore"}},
+                     1_000
+    end
+
+    test "a story with no player portrait yet paints one before the plate", ctx do
+      {:ok, story} =
+        ctx.story
+        |> Ecto.Changeset.change(protagonist: "Jack, who keeps the light and lives alone.")
+        |> AgenticStories.Repo.update()
+
+      expect(AgenticStories.Imagery.Mock, :generate, fn prompt ->
+        assert prompt =~ "whom the story addresses as \"you\""
+        assert prompt =~ "Jack, who keeps the light"
+        {:ok, %{binary: <<1, 2, 3>>, content_type: "image/jpeg"}}
+      end)
+
+      expect(AgenticStories.Imagery.Mock, :compose, fn prompt, references ->
+        assert String.contains?(prompt, "CHARACTER SHEET LAYOUT")
+        assert [%{binary: <<1, 2, 3>>, content_type: "image/jpeg"}] = references
+        {:ok, %{binary: <<8>>, content_type: "image/jpeg"}}
+      end)
+
+      expect(AgenticStories.Imagery.Mock, :compose, fn prompt, references ->
+        assert [%{binary: <<8>>, content_type: "image/jpeg"}] = references
+        assert prompt =~ "source image 1: the player — Jack, who keeps the light"
+        {:ok, %{binary: <<9>>, content_type: "image/jpeg"}}
+      end)
+
+      assert :ok = Engine.commission_plate(story, ctx.shore, "The Shore", "The tide turns.")
+
+      assert_receive {:message_created, %Message{kind: :illustration, content: "The Shore"}},
+                     1_000
+
+      assert {<<1, 2, 3>>, "image/jpeg"} = Stories.get_player_avatar(story.id)
+      assert {<<8>>, "image/jpeg"} = Stories.get_player_board(story.id)
+    end
+
     test "a declined composition still paints the scene from words", ctx do
       character = character_fixture(ctx.story, %{location_id: ctx.shore.id})
       {:ok, _} = Stories.put_character_avatar(character, <<255>>, "image/jpeg")
@@ -472,7 +651,8 @@ defmodule AgenticStories.EngineTest do
         {:error, {:http_error, 422, %{}}}
       end)
 
-      expect(AgenticStories.Imagery.Mock, :generate, fn _prompt ->
+      expect(AgenticStories.Imagery.Mock, :generate, fn prompt ->
+        assert prompt =~ "- the player"
         {:ok, %{binary: <<9>>, content_type: "image/jpeg"}}
       end)
 
@@ -537,6 +717,72 @@ defmodule AgenticStories.EngineTest do
                      1_000
     end
 
+    test "a changed outfit in the record is what the plate paints, not the portrait's clothes",
+         ctx do
+      character =
+        character_fixture(ctx.story, %{
+          name: "Maren",
+          location_id: ctx.lamp_room.id,
+          appearance: "Wind-burned, dark braid, a coat two sizes too big."
+        })
+
+      {:ok, _} = Stories.put_character_avatar(character, <<255, 216, 255>>, "image/jpeg")
+
+      {:ok, _} =
+        Stories.create_message(ctx.story, %{
+          kind: :act,
+          content: "steps out of the coat and into a red silk dress",
+          character_id: character.id,
+          location_id: ctx.lamp_room.id
+        })
+
+      expect(AgenticStories.LLM.Mock, :chat, fn request ->
+        assert request.system =~ "WEARING"
+        assert hd(request.messages).content =~ "red silk dress"
+
+        assert hd(request.messages).content =~
+                 "Maren: Wind-burned, dark braid, a coat two sizes too big."
+
+        {:ok,
+         %AgenticStories.LLM.Response{
+           text: """
+           CAPTION: Changed
+           LOOKS:
+           - Maren: dark braid, a red silk dress, the coat gone
+           Maren in a red silk dress, the coat on the floor.
+           """
+         }}
+      end)
+
+      expect(AgenticStories.Imagery.Mock, :compose, fn prompt, references ->
+        assert String.contains?(prompt, "CHARACTER SHEET LAYOUT")
+        assert prompt =~ "dark braid, a red silk dress, the coat gone"
+        assert [%{binary: <<255, 216, 255>>, content_type: "image/jpeg"}] = references
+        {:ok, %{binary: <<8>>, content_type: "image/jpeg"}}
+      end)
+
+      expect(AgenticStories.Imagery.Mock, :compose, fn prompt, references ->
+        assert prompt =~ "Head and shoulders"
+        assert [%{binary: <<8>>, content_type: "image/jpeg"}] = references
+        {:ok, %{binary: <<7>>, content_type: "image/jpeg"}}
+      end)
+
+      expect(AgenticStories.Imagery.Mock, :compose, fn prompt, references ->
+        assert [%{binary: <<8>>, content_type: "image/jpeg"}] = references
+        assert prompt =~ "source image 1: Maren — dark braid, a red silk dress, the coat gone"
+        assert prompt =~ "red silk dress"
+        {:ok, %{binary: <<1, 2, 3>>, content_type: "image/jpeg"}}
+      end)
+
+      assert :ok = Engine.request_plate(ctx.story)
+
+      assert_receive {:message_created, %Message{kind: :illustration, content: "Changed"}},
+                     1_000
+
+      assert Stories.get_character!(character.id).appearance ==
+               "dark braid, a red silk dress, the coat gone"
+    end
+
     test "a failed read-back costs the player a picture, not the story", ctx do
       test_pid = self()
 
@@ -582,6 +828,50 @@ defmodule AgenticStories.EngineTest do
       # the cooldown is beats of clear air, and none have passed
       Engine.apply_direction(ctx.story, direction, [], locations)
       refute_receive {:message_created, %Message{kind: :illustration}}, 100
+    end
+
+    test "a Director looks change rebuilds the sheet from the old likeness", ctx do
+      character =
+        character_fixture(ctx.story, %{
+          name: "Maren",
+          location_id: ctx.lamp_room.id,
+          appearance: "Wind-burned, dark braid, a coat two sizes too big."
+        })
+
+      {:ok, _} = Stories.put_character_avatar(character, <<255, 216, 255>>, "image/jpeg")
+      {:ok, _} = Stories.put_character_board(character, <<1, 2, 3>>, "image/jpeg")
+      assert_receive {:character_updated, %Character{avatar_type: "image/jpeg"}}
+      assert_receive {:character_updated, %Character{board_type: "image/jpeg"}}
+
+      expect(AgenticStories.Imagery.Mock, :compose, fn prompt, references ->
+        assert String.contains?(prompt, "CHARACTER SHEET LAYOUT")
+        assert prompt =~ "dark braid, a red silk dress"
+        refute prompt =~ "coat two sizes too big"
+        assert [%{binary: <<1, 2, 3>>, content_type: "image/jpeg"}] = references
+        {:ok, %{binary: <<8>>, content_type: "image/jpeg"}}
+      end)
+
+      expect(AgenticStories.Imagery.Mock, :compose, fn prompt, references ->
+        assert prompt =~ "Head and shoulders"
+        assert [%{binary: <<8>>, content_type: "image/jpeg"}] = references
+        {:ok, %{binary: <<7>>, content_type: "image/jpeg"}}
+      end)
+
+      assert :ok =
+               Engine.apply_direction(
+                 ctx.story,
+                 {:looks, "Maren", "dark braid, a red silk dress", nil},
+                 Stories.list_characters(ctx.story.id),
+                 Stories.list_locations(ctx.story.id)
+               )
+
+      assert_receive {:character_updated, %Character{appearance: "dark braid, a red silk dress"}},
+                     1_000
+
+      assert_receive {:character_updated, %Character{board_type: "image/jpeg"}}, 1_000
+      assert_receive {:character_updated, %Character{avatar_type: "image/jpeg"}}, 1_000
+      assert {<<8>>, "image/jpeg"} = Stories.get_board(character.id)
+      assert {<<7>>, "image/jpeg"} = Stories.get_avatar(character.id)
     end
   end
 

@@ -11,10 +11,13 @@ import Config
 # engine talks to. The Weaver gets a capable model; character ticks run on a
 # cheap/fast one.
 # Text provider: Venice.ai (uncensored). The Weaver and Director get Venice's
-# smart uncensored reasoning model; characters run on the cheap non-reasoning
-# uncensored tier — no hidden reasoning tokens, the cost lever that matters
-# at tick frequency ("venice-uncensored-role-play" is the pricier
-# roleplay-tuned alternative). The other drivers remain available:
+# smart uncensored reasoning model; characters run on Gemma 4 Uncensored —
+# non-reasoning and only ~4B active params per token, so ticks are fast and
+# pay no hidden thinking tokens. NOT the "e2ee-…-p" TEE variant of the same
+# model: E2EE models need a client-side encryption handshake and streaming
+# the Venice driver doesn't speak. ("venice-uncensored-1-2" and
+# "venice-uncensored-role-play" remain the Venice-tuned alternatives.)
+# The other drivers remain available:
 #   AgenticStories.LLM.Grok — xAI direct, e.g. weaver_model: "grok-4.6",
 #     character_model: "grok-4.20-0309-non-reasoning"
 #   AgenticStories.LLM.Claude — Anthropic direct, e.g. "claude-opus-5" /
@@ -25,7 +28,7 @@ import Config
 config :agentic_stories, AgenticStories.LLM,
   adapter: AgenticStories.LLM.Venice,
   weaver_model: "aion-labs-aion-3-0",
-  character_model: "venice-uncensored-1-2",
+  character_model: "gemma-4-uncensored",
   director_model: "aion-labs-aion-3-0",
   # sampling temperature for character prose only (ticks + journals);
   # remove to use the provider's default. Claude 5-family models reject

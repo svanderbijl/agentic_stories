@@ -64,6 +64,92 @@ defmodule AgenticStories.Engine.NarratorTest do
     end
   end
 
+  describe "tableau/4" do
+    # The plate must carry the moment's feeling, not just its furniture — but
+    # only as a camera could catch it: on faces, in postures. The old prompt
+    # banned "names of emotions" outright and every plate came out placid.
+    test "asks the illustrator's eye for faces and the feeling the record left on them" do
+      capture_request("CAPTION: The stranger turns away\nMaren stands at the rail, jaw set.")
+
+      cast = [%Character{name: "Maren", persona: "a fisherwoman"}]
+
+      beats = [
+        %Message{
+          kind: :say,
+          content: ~s("Get out," she says.),
+          character: %Character{name: "Maren"}
+        }
+      ]
+
+      assert {:ok, scene, caption, []} = Narrator.tableau(story(), shore(), cast, beats)
+      assert scene == "Maren stands at the rail, jaw set."
+      assert caption == "The stranger turns away"
+
+      assert_received {:request, request}
+      assert request.system =~ "each FACE shows"
+      assert request.system =~ "feeling"
+      assert request.system =~ "never into the lens"
+      assert request.system =~ "LOOKS:"
+      refute request.system =~ "no names of emotions"
+    end
+
+    test "reads a LOOKS list so the engine can remember the clothes" do
+      capture_request("""
+      CAPTION: Changed
+      LOOKS:
+      - Maren: dark braid, red silk dress, the coat gone
+      - the player: shirtsleeves
+
+      Maren in a red silk dress, the coat on the floor.
+      """)
+
+      assert {:ok, scene, "Changed", looks} =
+               Narrator.tableau(story(), shore(), [%Character{name: "Maren"}], [])
+
+      assert scene =~ "red silk dress"
+
+      assert looks == [
+               {"Maren", "dark braid, red silk dress, the coat gone"},
+               {"the player", "shirtsleeves"}
+             ]
+    end
+
+    test "the looks it is given are current; the record's clothes still win if newer" do
+      capture_request("CAPTION: Changed\nMaren in a red silk dress, the coat on the floor.")
+
+      told =
+        struct!(story(),
+          protagonist: "Jack, salt in his hair, the keeper's coat still on."
+        )
+
+      cast = [
+        %Character{
+          name: "Maren",
+          persona: "a fisherwoman",
+          appearance: "Wind-burned, dark braid, a red silk dress."
+        }
+      ]
+
+      beats = [
+        %Message{
+          kind: :act,
+          content: "steps out of the coat and into a red silk dress",
+          character: %Character{name: "Maren"}
+        }
+      ]
+
+      assert {:ok, scene, _caption, _looks} = Narrator.tableau(told, shore(), cast, beats)
+      assert scene =~ "red silk dress"
+
+      assert_received {:request, request}
+      assert request.system =~ "WEARING"
+      assert request.system =~ "look NOW"
+      assert hd(request.messages).content =~ "the player: Jack, salt in his hair"
+      assert hd(request.messages).content =~ "Maren: Wind-burned, dark braid, a red silk dress."
+      assert hd(request.messages).content =~ "red silk dress"
+    end
+  end
+
   describe "implied_move/3" do
     defp locations do
       [

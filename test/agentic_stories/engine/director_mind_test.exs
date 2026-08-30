@@ -38,6 +38,7 @@ defmodule AgenticStories.Engine.DirectorMindTest do
         name: "Maren",
         persona: "The keeper's sister.",
         agenda: "She has already been through the door.",
+        appearance: "Wind-burned, dark braid, a coat two sizes too big.",
         location_id: 11
       }
     ]
@@ -72,6 +73,12 @@ defmodule AgenticStories.Engine.DirectorMindTest do
       assert request.model == LLM.director_model()
       assert request.system =~ "Director"
       assert request.system =~ "She has already been through the door."
+      assert request.system =~ "Looks: Wind-burned, dark braid"
+      assert request.system =~ "wearing as the record has left them"
+      assert request.system =~ "not at the camera"
+      assert request.system =~ "looking into the"
+      assert request.system =~ ~s("do": "looks")
+      assert request.system =~ "Never merely narrate a new appearance"
       assert request.system =~ "The Shore: Wet shingle."
       assert request.system =~ "Jack, who keeps the light"
       assert [%{role: :user, content: content}] = request.messages
@@ -146,6 +153,16 @@ defmodule AgenticStories.Engine.DirectorMindTest do
                  ~s({"do": "move", "character": "Maren", "to": "The Shore"})
                )
 
+      assert {:ok, {:looks, "Maren", "a red silk dress, the coat gone", "steps into the dress"}} =
+               DirectorMind.parse_direction(
+                 ~s({"do": "looks", "character": "Maren", "appearance": "a red silk dress, the coat gone", "text": "steps into the dress"})
+               )
+
+      assert {:ok, {:looks, "Maren", "a red silk dress, the coat gone", nil}} =
+               DirectorMind.parse_direction(
+                 ~s({"do": "looks", "character": "Maren", "appearance": "a red silk dress, the coat gone"})
+               )
+
       assert {:ok, {:conclude, "And so it closed."}} =
                DirectorMind.parse_direction(~s({"do": "conclude", "text": "And so it closed."}))
 
@@ -156,6 +173,7 @@ defmodule AgenticStories.Engine.DirectorMindTest do
       assert :error = DirectorMind.parse_direction(~s({"do": "narrate", "text": ""}))
       assert :error = DirectorMind.parse_direction(~s({"do": "nudge", "character": "Maren"}))
       assert :error = DirectorMind.parse_direction(~s({"do": "move", "character": "Maren"}))
+      assert :error = DirectorMind.parse_direction(~s({"do": "looks", "character": "Maren"}))
       assert :error = DirectorMind.parse_direction("silence")
     end
   end

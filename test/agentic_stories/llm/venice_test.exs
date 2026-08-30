@@ -175,6 +175,43 @@ defmodule AgenticStories.LLM.VeniceTest do
     assert {:ok, %Response{text: "ok"}} = Venice.chat(request(system: nil))
   end
 
+  # Venice's `strip_thinking_response` handles the well-formed case, but
+  # reasoning models leak past it: Qwen-family templates can emit reasoning
+  # with only a closing tag, and a response truncated mid-thought has no
+  # final prose at all. Only what comes after the thinking may reach a story.
+  describe "thinking that leaks past Venice's server-side strip" do
+    defp respond_with(text) do
+      Req.Test.stub(Venice, fn conn ->
+        Req.Test.json(conn, %{"choices" => [%{"message" => %{"content" => text}}]})
+      end)
+    end
+
+    test "drops a well-formed <think> block" do
+      respond_with("<think>She would hear it as a threat.</think>\nMaren sets down the cup.")
+
+      assert {:ok, %Response{text: "Maren sets down the cup."}} = Venice.chat(request())
+    end
+
+    test "drops reasoning that arrives with only a closing tag" do
+      respond_with("The player expects an answer.\n</think>\n\"Only me,\" Maren says.")
+
+      assert {:ok, %Response{text: ~s("Only me," Maren says.)}} = Venice.chat(request())
+    end
+
+    test "a response truncated mid-thought is an empty reply, not leaked reasoning" do
+      respond_with("<think>She weighs whether to admit she saw the light go out and")
+
+      assert {:ok, %Response{text: ""}} = Venice.chat(request())
+    end
+
+    test "prose without thinking tags passes through byte-identical" do
+      respond_with("  -> The Kitchen: Maren follows the smell of smoke.")
+
+      assert {:ok, %Response{text: "  -> The Kitchen: Maren follows the smell of smoke."}} =
+               Venice.chat(request())
+    end
+  end
+
   test "returns an error tuple for non-200 responses" do
     Req.Test.stub(Venice, fn conn ->
       conn

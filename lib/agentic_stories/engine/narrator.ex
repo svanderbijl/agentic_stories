@@ -76,11 +76,14 @@ defmodule AgenticStories.Engine.Narrator do
   when they ask for a picture of the scene, so it reads the record rather
   than guessing from the cast list: a coat shrugged off ten beats ago is off.
 
-  Returns `{scene, caption}`, or `:none` when the read-back fails — a picture
-  is never worth crashing a story over.
+  Returns `{scene, caption, looks}`, or `:none` when the read-back fails — a
+  picture is never worth crashing a story over. `looks` is how each person
+  appears in the photograph, so the engine can persist it; without that the
+  next plate reverts to the woven clothes (characters are told not to
+  re-describe what they are wearing, so the record will not say it again).
   """
   @spec tableau(Story.t(), Location.t() | nil, [Character.t()], [Message.t()]) ::
-          {:ok, String.t(), String.t()} | :none
+          {:ok, String.t(), String.t(), [{String.t(), String.t()}]} | :none
   def tableau(%Story{} = story, location, characters, beats) do
     request = %Request{
       model: LLM.character_model(),
@@ -97,26 +100,44 @@ defmodule AgenticStories.Engine.Narrator do
 
           CAPTION: The stranger takes the beer
 
-      Then, from the next line on, the photograph itself. Name each person and say where they stand in
-      relation to each other and to the room, their posture, what their hands
-      are doing, where they are looking. Say what they are WEARING as the
-      record has left them — clothing put on, taken off, torn or soaked in
-      the story overrides how they were first described. Say what the place
-      looks like right now: light, weather, time of day, what is on the
-      floor and the walls, what has been moved or broken.
+      Then a LOOKS list, one line per person in Who is here, describing how
+      they look in this photograph — build, face, hair, clothes as the
+      record has left them. That list is stored; without it the next picture
+      forgets a coat that came off.
 
-      Concrete nouns and visible facts only. No dialogue, no names of
-      emotions, no backstory, no words about what anyone intends. Never add
-      a person who is not in the list of who is here. The photograph is for
-      the illustrator: write it in English, whatever language the story is
-      told in.
+          LOOKS:
+          - Maren: dark braid, red silk dress, the coat gone
+          - the player: shirtsleeves, salt in his hair
+
+      Then, from the next line on, the photograph itself — a candid film
+      still of the action, not a posed portrait. Name each person and say
+      where they stand in relation to each other and to the room, their
+      posture, what their hands are doing, where they are looking. Eyes on
+      each other, on the work, on the room — never into the lens. Say what
+      each FACE shows — the feeling the record's last beats have left on it,
+      as a camera would catch it: eyes, mouth, jaw, a flush, tears held or
+      falling, a smile that does or does not reach the eyes.
+      Say what they are WEARING as the record has left them. The looks under
+      Who is here are how they look NOW, as the world currently has them;
+      clothing put on, taken off, torn or soaked in the record since that
+      description still overrides it. Say what the place looks like right
+      now: light, weather, time of day, what is on the floor and the walls,
+      what has been moved or broken.
+
+      Concrete nouns and visible facts only. No dialogue, no backstory, no
+      words about what anyone intends. Emotion belongs in the photograph
+      only as far as a camera could catch it — on a face, in a posture, in
+      hands; "her jaw set, eyes wet" tells an illustrator more than an
+      explanation ever will. Never add a person who is not in the list of
+      who is here. The photograph is for the illustrator: write it in
+      English, whatever language the story is told in.
       """,
       messages: [
         %{
           role: :user,
           content: """
           #{tableau_place(location)}Who is here:
-          #{tableau_cast(characters)}
+          #{tableau_cast(story, characters)}
           The record so far:
 
           #{CharacterMind.transcript(beats)}
@@ -136,20 +157,57 @@ defmodule AgenticStories.Engine.Narrator do
       :none
   end
 
-  # Lenient on purpose: the caption line is a nicety, the tableau is the
-  # point. A model that skips the label has still written the photograph.
+  # Lenient on purpose: the caption and LOOKS list are niceties, the
+  # photograph is the point. A model that skips the labels has still written
+  # a picture; it just will not remember the clothes for the next one.
   defp read_tableau(text, location) do
-    {caption, scene} =
-      case String.split(String.trim(text || ""), "\n", parts: 2) do
-        ["CAPTION:" <> caption, scene] -> {String.trim(caption), String.trim(scene)}
-        _ -> {nil, String.trim(text || "")}
-      end
+    lines = text |> to_string() |> String.trim() |> String.split("\n")
+    {caption, lines} = take_caption(lines)
+    {looks, scene_lines} = take_looks(lines)
+    scene = scene_lines |> Enum.join("\n") |> String.trim()
 
     case scene do
       "" -> :none
-      scene -> {:ok, scene, caption || (location && location.name) || "The scene"}
+      scene -> {:ok, scene, caption || (location && location.name) || "The scene", looks}
     end
   end
+
+  defp take_caption(["CAPTION:" <> caption | rest]), do: {String.trim(caption), rest}
+  defp take_caption(lines), do: {nil, lines}
+
+  defp take_looks(lines) do
+    lines = Enum.drop_while(lines, &(String.trim(&1) == ""))
+
+    case lines do
+      ["LOOKS:" <> remainder | rest] ->
+        rest = if(String.trim(remainder) == "", do: rest, else: ["- " <> remainder | rest])
+        take_looks_entries(rest, [])
+
+      ["LOOKS" | rest] ->
+        take_looks_entries(rest, [])
+
+      _ ->
+        {[], lines}
+    end
+  end
+
+  defp take_looks_entries([line | rest], acc) do
+    trimmed = String.trim(line)
+
+    cond do
+      trimmed == "" ->
+        {Enum.reverse(acc), rest}
+
+      match = Regex.run(~r/\A-\s*([^:]+):\s*(.+)\z/u, trimmed) ->
+        [_, name, looks] = match
+        take_looks_entries(rest, [{String.trim(name), String.trim(looks)} | acc])
+
+      true ->
+        {Enum.reverse(acc), [line | rest]}
+    end
+  end
+
+  defp take_looks_entries([], acc), do: {Enum.reverse(acc), []}
 
   defp tableau_place(nil), do: ""
 
@@ -162,12 +220,22 @@ defmodule AgenticStories.Engine.Narrator do
     "The place: #{location.name} — #{location.description}\n\n"
   end
 
-  defp tableau_cast([]), do: "- nobody but the player\n"
+  defp tableau_cast(story, characters) do
+    [player_looks(story) | Enum.map(characters, &character_looks/1)]
+    |> Enum.map_join("\n", & &1)
+    |> Kernel.<>("\n")
+  end
 
-  defp tableau_cast(characters) do
-    Enum.map_join(characters, "\n", fn character ->
-      "- #{character.name}: #{character.appearance || character.persona}"
-    end)
+  defp player_looks(%Story{} = story) do
+    case story.player_appearance || story.protagonist do
+      nil -> "- the player"
+      looks -> "- the player: #{looks}"
+    end
+  end
+
+  defp character_looks(%Character{} = character) do
+    looks = character.appearance || character.persona
+    "- #{character.name}: #{looks}"
   end
 
   @doc """

@@ -21,6 +21,7 @@ defmodule AgenticStories.Engine.DirectorMind do
           | {:reveal, String.t(), String.t()}
           | {:move_character, String.t(), String.t(), String.t() | nil}
           | {:illustrate, String.t(), String.t()}
+          | {:looks, String.t(), String.t(), String.t() | nil}
           | {:conclude, String.t()}
           | :wait
 
@@ -67,6 +68,10 @@ defmodule AgenticStories.Engine.DirectorMind do
       {:ok, %{"do" => "illustrate", "prompt" => prompt, "caption" => caption}}
       when is_binary(prompt) and prompt != "" and is_binary(caption) and caption != "" ->
         {:ok, {:illustrate, prompt, caption}}
+
+      {:ok, %{"do" => "looks", "character" => name, "appearance" => appearance} = map}
+      when is_binary(name) and name != "" and is_binary(appearance) and appearance != "" ->
+        {:ok, {:looks, name, appearance, map["text"]}}
 
       {:ok, %{"do" => "conclude", "text" => closing}}
       when is_binary(closing) and closing != "" ->
@@ -122,7 +127,8 @@ defmodule AgenticStories.Engine.DirectorMind do
     {"do": "nudge", "character": "exact name", "note": "a private impulse, in second person, that gives them a dramatic reason to act now"}
     {"do": "reveal", "name": "a new place's short name", "description": "what it is like to stand there"}
     {"do": "move", "character": "exact name", "to": "the exact name of the place they go (a new short name opens a new place)", "text": "what they do as they go — third person, without their name in front, e.g. 'comes back up the stairs, salt still in her hair'"}
-    {"do": "illustrate", "prompt": "who is in frame and what they are doing, in vivid concrete visual detail, for an illustrator", "caption": "a short caption in the story's voice"}
+    {"do": "illustrate", "prompt": "who is in frame, what they are wearing as the record has left them, what they are doing mid-action, where they are looking (not at the camera), and what their faces show, in vivid concrete visual detail, for an illustrator", "caption": "a short caption in the story's voice"}
+    {"do": "looks", "character": "exact name", "appearance": "what they look like now — build, face, hair, clothes — in one or two concrete sentences", "text": "what happens as they change — third person, without their name in front (omit when correcting a look nobody witnesses)"}
     {"do": "conclude", "text": "two or three closing paragraphs that resolve the arc, addressed to 'you'"}
     {"do": "wait"}
 
@@ -130,8 +136,9 @@ defmodule AgenticStories.Engine.DirectorMind do
     - Intervene rarely. The story belongs to the player and the cast; you supply
       pressure only when a scene stalls, drifts from the arc, or has earned a turn.
     - The story has one language — the language of the premise and the record.
-      Every "text", "note", and "caption" you write is in it. The one exception
-      is "illustrate"'s prompt: that goes to an image model, and is always English.
+      Every "text", "note", "caption", and "appearance" you write is in it. The
+      one exception is "illustrate"'s prompt: that goes to an image model, and
+      is always English.
     - The one failure you must never allow: a player left hanging. If the player's
       latest beat has gone unanswered, motion is owed — nudge whoever should
       respond, or narrate the world responding.
@@ -144,11 +151,22 @@ defmodule AgenticStories.Engine.DirectorMind do
       character has wandered off and the story pulls them back — the player is
       looking for them, a scene needs them — "move" them there; never merely
       narrate a return, because narration does not relocate anyone.
+    - The record must never disagree with how people actually look. When the
+      story changes someone's face, hair, or clothes — a new dress, a wound, a
+      transformation — "looks" them so the illustrator and the character
+      themselves agree with the fiction. Include "text" when the change happens
+      in front of anyone; omit it when you are correcting a look the weave got
+      wrong. Never merely narrate a new appearance, because narration does not
+      re-dress anyone.
     - "illustrate" when the story TURNS — a revelation, an arrival, a rupture, a
       first meeting, a moment the player will remember. Describe the people in
-      the frame and what their bodies are doing; a plate of empty scenery is a
-      wasted one. Plates are rate-limited outside your view, so ask whenever a
-      moment has genuinely earned a picture and let the limit do the refusing.
+      the frame, what they are wearing right now (their current looks, not a
+      discarded original — a changed dress, a coat shrugged off), what their
+      bodies are doing mid-action, and what their faces show — the emotion of
+      the moment as a candid camera would catch it, nobody looking into the
+      lens; a plate of empty scenery or of posed faces is a wasted one. Plates
+      are rate-limited outside your view, so ask whenever a moment has genuinely
+      earned a picture and let the limit do the refusing.
     - "conclude" only when the arc has truly resolved and the scene is quiet.
       Ending a story is irreversible.
     - Never speak for a character and never address the player directly outside narration.
@@ -171,10 +189,16 @@ defmodule AgenticStories.Engine.DirectorMind do
         end
 
       "- #{character.name}#{where}: #{character.persona}" <>
+        appearance_line(character) <>
         if(character.agenda, do: " Privately: #{character.agenda}", else: "") <>
         if(character.arc, do: " Their arc: #{character.arc}", else: "")
     end)
   end
+
+  defp appearance_line(%Character{appearance: nil}), do: ""
+
+  defp appearance_line(%Character{appearance: appearance}),
+    do: " Looks: #{appearance}."
 
   defp places(locations) do
     Enum.map_join(locations, "\n", fn

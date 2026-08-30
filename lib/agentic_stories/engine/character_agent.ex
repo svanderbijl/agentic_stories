@@ -66,6 +66,15 @@ defmodule AgenticStories.Engine.CharacterAgent do
     GenServer.cast(via(character_id), {:relocated, location_id})
   end
 
+  @doc """
+  The Director changed how this character looks; a running agent must not
+  keep writing from the old clothes. Quietly does nothing when no agent is
+  running — the database row already holds the truth for the next revival.
+  """
+  def redressed(character_id, appearance) do
+    GenServer.cast(via(character_id), {:redressed, appearance})
+  end
+
   def whereis(character_id) do
     case Registry.lookup(AgenticStories.Engine.Registry, {:character, character_id}) do
       [{pid, _value}] -> pid
@@ -138,6 +147,10 @@ defmodule AgenticStories.Engine.CharacterAgent do
 
   def handle_cast({:relocated, location_id}, state) do
     {:noreply, %{state | character: %{state.character | location_id: location_id}}}
+  end
+
+  def handle_cast({:redressed, appearance}, state) do
+    {:noreply, %{state | character: %{state.character | appearance: appearance}}}
   end
 
   def handle_cast({:nudge, note, amount}, state) do
@@ -366,11 +379,13 @@ defmodule AgenticStories.Engine.CharacterAgent do
             do: text,
             else: "slips away toward #{location.name}"
 
-        relocate(state, location, text)
+        # a beat that speaks *and* leaves is still a :say (torch, guards)
+        kind = if CharacterMind.spoken?(text), do: :say, else: :act
+        relocate(state, location, text, kind)
     end
   end
 
-  defp relocate(%{story: story, character: character} = state, location, text, kind \\ :act) do
+  defp relocate(%{story: story, character: character} = state, location, text, kind) do
     case Engine.character_move(story, character, location, text, kind) do
       {:ok, _message, character} -> %{state | character: character}
       {:error, _reason} -> state

@@ -93,6 +93,42 @@ defmodule AgenticStories.Engine.DirectorAgentTest do
     assert Enum.any?(Stories.list_locations(ctx.story.id), &(&1.name == "Beyond the Door"))
   end
 
+  # A model happily re-"reveals" a place the story already has; a second row
+  # with the same name splits witnessing across twin rooms and the cast
+  # ping-pongs between them.
+  test "a reveal of a place the story already has does not duplicate it", ctx do
+    expect(LLM.Mock, :chat, fn _request ->
+      {:ok,
+       %Response{
+         text: ~s({"do": "reveal", "name": "The Lamp Room", "description": "Brass and salt."})
+       }}
+    end)
+
+    pid = start_supervised!({DirectorAgent, story: ctx.story})
+    send(pid, :tick)
+    :sys.get_state(pid)
+
+    assert [%{name: "The Lamp Room"}] = Stories.list_locations(ctx.story.id)
+  end
+
+  test "a reveal fills in a place the cast opened by name alone", ctx do
+    {:ok, _bare} = Stories.create_location(ctx.story, %{name: "The Cellar"})
+
+    expect(LLM.Mock, :chat, fn _request ->
+      {:ok,
+       %Response{
+         text: ~s({"do": "reveal", "name": "The Cellar", "description": "Cold air rises."})
+       }}
+    end)
+
+    pid = start_supervised!({DirectorAgent, story: ctx.story})
+    send(pid, :tick)
+    :sys.get_state(pid)
+
+    cellars = ctx.story.id |> Stories.list_locations() |> Enum.filter(&(&1.name == "The Cellar"))
+    assert [%{description: "Cold air rises."}] = cellars
+  end
+
   test "a conclude direction finishes the story and retires everyone", ctx do
     expect(LLM.Mock, :chat, fn _request ->
       {:ok, %Response{text: ~s({"do": "conclude", "text": "And the tide came back."})}}

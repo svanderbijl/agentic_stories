@@ -398,17 +398,30 @@ defmodule AgenticStories.Engine do
         end
 
       {:reveal, name, description} ->
-        case Stories.create_location(story, %{name: name, description: description}) do
-          {:ok, location} ->
-            Logger.info("the Director reveals #{location.name}")
+        # A model happily re-"reveals" a place the story already has, and a
+        # second row with the same name splits witnessing across twin rooms.
+        # An existing place only ever gains the description it was missing.
+        case Stories.find_location(locations, name) do
+          %Location{} = location ->
+            Stories.describe_location(location, description)
             :ok
 
-          {:error, _changeset} ->
-            :ok
+          nil ->
+            case Stories.create_location(story, %{name: name, description: description}) do
+              {:ok, location} ->
+                Logger.info("the Director reveals #{location.name}")
+                :ok
+
+              {:error, _changeset} ->
+                :ok
+            end
         end
 
       {:move_character, character_name, location_name, text} ->
         move_cast_member(story, characters, locations, character_name, location_name, text)
+
+      {:looks, character_name, appearance, text} ->
+        dress_cast_member(story, characters, character_name, appearance, text)
 
       {:illustrate, prompt, caption} ->
         # The prompt invites plates at real turning points; this is what keeps
@@ -465,6 +478,336 @@ defmodule AgenticStories.Engine do
     end
   end
 
+  # The Director changes how someone looks: persist it, tell a live agent so
+  # they stop writing from the old clothes, and rebuild the character sheet
+  # (and from it the portrait) so the next plate's face-lock is not still
+  # wearing the weave. An optional beat makes the change visible in the
+  # record the way a directed move is.
+  defp dress_cast_member(story, characters, character_name, appearance, text) do
+    appearance = appearance |> to_string() |> String.trim()
+
+    with true <- appearance != "",
+         %Character{} = character <- Enum.find(characters, &(&1.name == character_name)),
+         {:ok, character} <- Stories.describe_character(character, appearance) do
+      Logger.info("the Director looks at #{character.name}")
+      CharacterAgent.redressed(character.id, character.appearance)
+      refresh_likeness_later(story, character)
+      write_looks_beat(story, character, text)
+      :ok
+    else
+      _ -> :ok
+    end
+  end
+
+  defp write_looks_beat(story, character, text) when is_binary(text) do
+    case String.trim(text) do
+      "" ->
+        :ok
+
+      content ->
+        Stories.create_message(story, %{
+          kind: :act,
+          content: content,
+          character_id: character.id,
+          location_id: character.location_id
+        })
+
+        :ok
+    end
+  end
+
+  defp write_looks_beat(_story, _character, _text), do: :ok
+
+  # A plate that actually saw how people look NOW writes it down. Characters
+  # are told not to re-describe clothing, so the record will not say it
+  # again; without this the next plate falls back to the woven clothes.
+  defp remember_looks(story, present, looks) when looks in [nil, []], do: {story, present}
+
+  defp remember_looks(story, present, looks) do
+    Enum.each(looks, fn {name, appearance} ->
+      try do
+        remember_one(story, present, name, appearance)
+      rescue
+        exception ->
+          Logger.warning("could not remember looks for #{name}: #{Exception.message(exception)}")
+      end
+    end)
+
+    {Stories.get_story!(story.id), Enum.map(present, &Stories.get_character!(&1.id))}
+  end
+
+  defp remember_one(_story, _present, _name, appearance)
+       when appearance in [nil, ""],
+       do: :ok
+
+  defp remember_one(story, present, name, appearance) do
+    appearance = appearance |> to_string() |> String.trim()
+    if appearance == "", do: :ok, else: remember_trimmed(story, present, name, appearance)
+  end
+
+  defp remember_trimmed(story, present, name, appearance) do
+    case match_looks_subject(present, name) do
+      :player ->
+        unless same_looks?(story.player_appearance || story.protagonist, appearance) do
+          {:ok, story} = Stories.describe_player(story, appearance)
+          refresh_player_likeness(story)
+        end
+
+      %Character{id: id} ->
+        character = Stories.get_character!(id)
+
+        unless same_looks?(character.appearance, appearance) do
+          case Stories.describe_character(character, appearance) do
+            {:ok, updated} ->
+              CharacterAgent.redressed(updated.id, updated.appearance)
+              refresh_character_likeness(story, updated)
+
+            {:error, _reason} ->
+              :ok
+          end
+        end
+
+      nil ->
+        :ok
+    end
+  end
+
+  defp match_looks_subject(present, name) do
+    key = name |> to_string() |> String.trim() |> String.downcase()
+
+    cond do
+      key in ["the player", "player", "you"] ->
+        :player
+
+      character = Enum.find(present, &(String.downcase(&1.name) == key)) ->
+        character
+
+      true ->
+        nil
+    end
+  end
+
+  defp same_looks?(left, right), do: String.trim(left || "") == String.trim(right || "")
+
+  defp refresh_likeness_later(story, character) do
+    if Imagery.enabled?() do
+      Task.Supervisor.start_child(AgenticStories.Engine.TaskSupervisor, fn ->
+        refresh_character_likeness(story, character)
+      end)
+    end
+
+    :ok
+  end
+
+  @doc """
+  First likeness for a character: a portrait, then a character-design sheet
+  composed from it. If the portrait already exists, just the missing sheet.
+  Best-effort — a failed sheet leaves the portrait and the story fine.
+  """
+  def paint_character_likeness(story, character) do
+    if Imagery.enabled?() do
+      cond do
+        Stories.get_board(character.id) ->
+          :ok
+
+        Stories.get_avatar(character.id) ->
+          paint_character_board(story, character)
+
+        true ->
+          seed_character_likeness(story, character)
+      end
+    end
+
+    :ok
+  rescue
+    exception ->
+      Logger.warning("no likeness for #{character.name}: #{Exception.message(exception)}")
+      :ok
+  end
+
+  @doc """
+  First likeness for the player: a portrait, then a character-design sheet.
+  Same skip rules as `paint_character_likeness/2`.
+  """
+  def paint_player_likeness(%Story{protagonist: protagonist} = story)
+      when is_binary(protagonist) and protagonist != "" do
+    if Imagery.enabled?() do
+      cond do
+        Stories.get_player_board(story.id) ->
+          :ok
+
+        Stories.get_player_avatar(story.id) ->
+          paint_player_board(story)
+
+        true ->
+          seed_player_likeness(story)
+      end
+    end
+
+    :ok
+  rescue
+    exception ->
+      Logger.warning("no likeness for the player: #{Exception.message(exception)}")
+      :ok
+  end
+
+  def paint_player_likeness(_story), do: :ok
+
+  @doc """
+  Appearance changed: rebuild the sheet from the current identity (sheet
+  if we have one, otherwise the portrait) so the face stays put, then a
+  new portrait from that sheet so the avatar is wearing the new clothes.
+  In-process so a plate compose that follows sees the new likeness.
+  """
+  def refresh_character_likeness(story, character) do
+    if Imagery.enabled?() do
+      case identity_reference(Stories.get_board(character.id), Stories.get_avatar(character.id)) do
+        nil ->
+          seed_character_likeness(story, character)
+
+        reference ->
+          case compose_image(Weaver.board_prompt(story, character), [reference], character.name) do
+            {:ok, board} ->
+              Stories.put_character_board(character, board.binary, board.content_type)
+
+              case compose_image(
+                     Weaver.portrait_from_board_prompt(story, character),
+                     [board],
+                     character.name
+                   ) do
+                {:ok, portrait} ->
+                  Stories.put_character_avatar(character, portrait.binary, portrait.content_type)
+
+                :error ->
+                  :ok
+              end
+
+            :error ->
+              :ok
+          end
+      end
+    end
+
+    :ok
+  rescue
+    exception ->
+      Logger.warning("no likeness for #{character.name}: #{Exception.message(exception)}")
+      :ok
+  end
+
+  @doc "Appearance changed for the player: same rebuild as a cast member."
+  def refresh_player_likeness(%Story{} = story) do
+    if Imagery.enabled?() do
+      case identity_reference(
+             Stories.get_player_board(story.id),
+             Stories.get_player_avatar(story.id)
+           ) do
+        nil ->
+          seed_player_likeness(story)
+
+        reference ->
+          case compose_image(Weaver.player_board_prompt(story), [reference], "the player") do
+            {:ok, board} ->
+              Stories.put_player_board(story, board.binary, board.content_type)
+
+              case compose_image(
+                     Weaver.player_portrait_from_board_prompt(story),
+                     [board],
+                     "the player"
+                   ) do
+                {:ok, portrait} ->
+                  Stories.put_player_avatar(story, portrait.binary, portrait.content_type)
+
+                :error ->
+                  :ok
+              end
+
+            :error ->
+              :ok
+          end
+      end
+    end
+
+    :ok
+  rescue
+    exception ->
+      Logger.warning("no likeness for the player: #{Exception.message(exception)}")
+      :ok
+  end
+
+  defp seed_character_likeness(story, character) do
+    case Imagery.generate(Weaver.avatar_prompt(story, character)) do
+      {:ok, %{binary: binary, content_type: content_type} = portrait} ->
+        Stories.put_character_avatar(character, binary, content_type)
+        paint_character_board(story, character, portrait)
+
+      {:error, reason} ->
+        Logger.warning("no portrait for #{character.name}: #{inspect(reason)}")
+    end
+  end
+
+  defp seed_player_likeness(story) do
+    case Imagery.generate(Weaver.player_avatar_prompt(story)) do
+      {:ok, %{binary: binary, content_type: content_type} = portrait} ->
+        Stories.put_player_avatar(story, binary, content_type)
+        paint_player_board(story, portrait)
+
+      {:error, reason} ->
+        Logger.warning("no portrait for the player: #{inspect(reason)}")
+    end
+  end
+
+  defp paint_character_board(story, character, portrait \\ nil) do
+    reference = portrait || image(Stories.get_avatar(character.id))
+
+    if reference do
+      case compose_image(Weaver.board_prompt(story, character), [reference], character.name) do
+        {:ok, board} ->
+          Stories.put_character_board(character, board.binary, board.content_type)
+
+        :error ->
+          :ok
+      end
+    end
+  end
+
+  defp paint_player_board(story, portrait \\ nil) do
+    reference = portrait || image(Stories.get_player_avatar(story.id))
+
+    if reference do
+      case compose_image(Weaver.player_board_prompt(story), [reference], "the player") do
+        {:ok, board} ->
+          Stories.put_player_board(story, board.binary, board.content_type)
+
+        :error ->
+          :ok
+      end
+    end
+  end
+
+  defp compose_image(prompt, references, who) do
+    case Imagery.compose(prompt, references) do
+      {:ok, image} ->
+        {:ok, image}
+
+      {:error, reason} ->
+        Logger.warning("no likeness compose for #{who}: #{inspect(reason)}")
+        :error
+    end
+  end
+
+  defp identity_reference(board, portrait) do
+    case {board, portrait} do
+      {nil, nil} -> nil
+      {board, _} when not is_nil(board) -> image(board)
+      {_, portrait} -> image(portrait)
+    end
+  end
+
+  defp image(nil), do: nil
+  defp image({binary, content_type}), do: %{binary: binary, content_type: content_type}
+  defp image(%{binary: _, content_type: _} = image), do: image
+
   @doc """
   The player asks for a picture of where they are. Unlike every other plate,
   this one is not commissioned from a caller who already knows the scene: the
@@ -491,8 +834,11 @@ defmodule AgenticStories.Engine do
         beats = story.id |> Stories.player_messages() |> Enum.take(-config(:memory_window))
 
         case Narrator.tableau(story, location, present, beats) do
-          {:ok, scene, caption} -> paint_plate(story, location, caption, scene, present)
-          :none -> Logger.warning("no tableau for \"#{story.title}\"; picture skipped")
+          {:ok, scene, caption, looks} ->
+            paint_plate(story, location, caption, scene, present, looks)
+
+          :none ->
+            Logger.warning("no tableau for \"#{story.title}\"; picture skipped")
         end
       end)
     end
@@ -503,10 +849,14 @@ defmodule AgenticStories.Engine do
   def request_plate(%Story{}), do: :ok
 
   @doc """
-  Paints a scene plate in the background: present characters' portraits ride
-  along as reference images (up to three) so the people in the plate are the
-  people on the cast cards; if composition fails, a text-only render still
-  lands. Best-effort — a story is never worse off for a missing plate.
+  Paints a scene plate in the background: present characters' sheets ride
+  along as reference images (up to three) so the people in the plate are
+  the people on the cast cards. A sheet is the identity document — face,
+  body, clothes — and a portrait is the fallback when no sheet exists yet.
+  Venice's multi-edit treats the first image as the canvas: that slot has
+  to be a person (sheet or portrait), never a generated scene of invented
+  extras. If composition fails, a text-only render still lands. Best-effort
+  — a story is never worse off for a missing plate.
   """
   def commission_plate(%Story{} = story, location, caption, scene) do
     if Imagery.enabled?() do
@@ -520,8 +870,9 @@ defmodule AgenticStories.Engine do
     :ok
   end
 
-  defp paint_plate(story, location, caption, scene, present) do
-    portraits = portraits(present)
+  defp paint_plate(story, location, caption, scene, present, looks \\ []) do
+    {story, present} = remember_looks(story, present, looks)
+    portraits = portraits(story, present)
 
     result =
       case portraits do
@@ -529,10 +880,10 @@ defmodule AgenticStories.Engine do
           Imagery.generate(plate_art_direction(story, location, scene, present))
 
         portraits ->
-          cast = Enum.map(portraits, &elem(&1, 0))
+          subjects = Enum.map(portraits, &elem(&1, 0))
           references = Enum.map(portraits, &elem(&1, 1))
 
-          case Imagery.compose(plate_composition(story, location, scene, cast), references) do
+          case Imagery.compose(plate_composition(story, location, scene, subjects), references) do
             {:ok, image} ->
               {:ok, image}
 
@@ -560,70 +911,151 @@ defmodule AgenticStories.Engine do
     end
   end
 
-  # The characters whose portraits can ride along as reference images, paired
-  # with the images themselves — capped at the three the port accepts, in
-  # cast order, so the names in the prompt line up with the source images.
-  defp portraits(present) do
-    present
-    |> Enum.filter(& &1.avatar_type)
+  # Likeness references for compose, capped at the three the port accepts.
+  # Prefer the character sheet (full identity) over the headshot. The player
+  # leads when they have one: they are in every picture, and without that
+  # face each plate invents a new "you". Then present characters, in cast
+  # order, so names line up with source images. Image 1 is the canvas: it
+  # must be a person, never a generated scene of invented extras (that is
+  # how two plates of the same story grow two casts).
+  defp portraits(story, present) do
+    (player_portrait(story) ++ character_portraits(present))
     |> Enum.take(3)
+  end
+
+  defp player_portrait(%Story{} = story) do
+    case player_likeness(story) do
+      {binary, content_type} ->
+        [
+          {%{name: "the player", appearance: current_player_looks(story)},
+           %{binary: binary, content_type: content_type}}
+        ]
+
+      nil ->
+        []
+    end
+  end
+
+  # New weaves paint this up front. A story woven before player likeness
+  # existed still gets one on the next plate, so "you" stop changing face.
+  # The sheet is the identity document; the portrait is the fallback.
+  defp player_likeness(%Story{id: id, protagonist: protagonist} = story)
+       when is_binary(protagonist) and protagonist != "" do
+    case Stories.get_player_board(id) || Stories.get_player_avatar(id) do
+      {binary, content_type} ->
+        {binary, content_type}
+
+      nil ->
+        paint_player_likeness(story)
+        Stories.get_player_board(id) || Stories.get_player_avatar(id)
+    end
+  end
+
+  defp player_likeness(_story), do: nil
+
+  defp character_portraits(present) do
+    present
+    |> Enum.filter(&(&1.board_type || &1.avatar_type))
     |> Enum.flat_map(fn character ->
-      case Stories.get_avatar(character.id) do
-        {binary, content_type} -> [{character, %{binary: binary, content_type: content_type}}]
-        nil -> []
+      case Stories.get_board(character.id) || Stories.get_avatar(character.id) do
+        {binary, content_type} ->
+          [
+            {%{name: character.name, appearance: character.appearance},
+             %{binary: binary, content_type: content_type}}
+          ]
+
+        nil ->
+          []
       end
     end)
   end
 
   # Words only. The cast leads: an art direction that opens with camera talk
-  # and buries the people at the bottom gets back an empty room.
+  # and buries the people at the bottom gets back an empty room. Looks on
+  # the character are current; the scene still wins if the record is newer.
   defp plate_art_direction(story, location, scene, present) do
     """
-    #{cast_clause(present)}#{place_clause(location)}What is happening: #{scene}
+    #{cast_clause(story, present)}#{place_clause(location)}What is happening: #{scene}
 
-    Paint it as a photorealistic film still for a work of interactive fiction:
-    the people above clearly visible in frame, natural light, shallow depth of
-    field, no text or lettering anywhere. The story's tone: #{story.tone}.
+    Paint it as a photorealistic candid film still, caught mid-action: the
+    people above clearly visible in frame, full-length, natural light,
+    shallow depth of field, no text or lettering anywhere. Nobody looks at
+    the camera — they look at each other or at what they are doing. The
+    story's tone: #{story.tone}. Faces, hair, and builds match the
+    descriptions; clothing, pose, and expression are what the scene says
+    they are, even when that disagrees with the descriptions above.
     """
   end
 
-  # With reference portraits this is an EDIT, not a fresh render: the first
-  # source image is the base the model works from, so name the people in the
-  # order their portraits were sent and ask for a new scene around them.
-  defp plate_composition(story, location, scene, cast) do
+  # With reference sheets this is an EDIT whose first source image is the
+  # canvas. Name the people in the order their sheets were sent. Likeness
+  # comes from the FRONT VIEW on those sheets; clothing, pose, and crop
+  # come from the scene — otherwise every plate is a restaged character
+  # board, four views of the same person in a gray studio.
+  defp plate_composition(story, location, scene, subjects) do
     people =
-      cast
+      subjects
       |> Enum.with_index(1)
-      |> Enum.map_join("\n", fn {character, index} ->
-        "- source image #{index}: #{character.name}"
+      |> Enum.map_join("\n", fn {subject, index} ->
+        case subject.appearance do
+          nil -> "- source image #{index}: #{subject.name}"
+          appearance -> "- source image #{index}: #{subject.name} — #{appearance}"
+        end
       end)
+
+    named_player? = Enum.any?(subjects, &(&1.name == "the player"))
+    player_note = if named_player?, do: "", else: player_line(story) <> "\n"
 
     """
     Compose the people from the source images into one new photorealistic
-    scene together — same faces, same builds, unmistakably these people:
+    scene together — same faces, same builds, unmistakably these people.
+    Each source image is a character reference sheet (or a portrait if no
+    sheet exists). It gives likeness only: use the FRONT VIEW of that
+    person for face, body, hair, and how they look now. Do not copy the
+    sheet's layout, labels, multiple views, gray studio background, crop,
+    camera, pose, or gaze. Do not put more than one copy of the same
+    person in the frame. Paint a new full-length candid film still, caught
+    mid-action. Nobody looks at the camera — they look at each other or at
+    what they are doing, as the scene describes. Clothing, posture, and
+    expression are what the scene below says they are, even when that
+    disagrees with the sheet or the original dress.
 
     #{people}
 
-    #{place_clause(location)}What is happening: #{scene}
+    #{player_note}#{place_clause(location)}What is happening: #{scene}
 
-    Full-length framing that shows them in the place, shot like a film still:
-    natural light, no text or lettering anywhere. The story's tone: #{story.tone}.
+    Natural light, no text or lettering anywhere. The story's tone: #{story.tone}.
     """
   end
 
   defp place_clause(nil), do: ""
   defp place_clause(location), do: "Where: #{location.name} — #{location.description}\n"
 
-  defp cast_clause([]), do: ""
-
-  defp cast_clause(present) do
+  defp cast_clause(story, present) do
     lines =
-      Enum.map_join(present, "\n", fn character ->
-        "- #{character.name}: #{character.appearance || character.persona}"
-      end)
+      [
+        player_line(story)
+        | Enum.map(present, fn character ->
+            "- #{character.name}: #{character.appearance || character.persona}"
+          end)
+      ]
+      |> Enum.join("\n")
 
-    "Who is in frame:\n#{lines}\n"
+    """
+    Who is in frame (face, hair, and build as described; clothing is whatever the scene below says):
+    #{lines}
+    """
   end
+
+  defp player_line(%Story{} = story) do
+    case current_player_looks(story) do
+      nil -> "- the player"
+      looks -> "- the player: #{looks}"
+    end
+  end
+
+  defp current_player_looks(%Story{} = story),
+    do: story.player_appearance || story.protagonist
 
   defp player_location(%Story{player_location_id: nil}), do: nil
 

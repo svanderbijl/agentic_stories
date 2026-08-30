@@ -307,6 +307,56 @@ defmodule AgenticStories.StoriesTest do
       assert {<<255, 216, 255>>, "image/jpeg"} = Stories.get_avatar(character.id)
     end
 
+    test "put_player_avatar/3 stores the likeness and broadcasts without the binary" do
+      story = story_fixture()
+      Stories.subscribe(story.id)
+
+      assert {:ok, %Story{player_avatar_type: "image/jpeg", player_avatar: nil}} =
+               Stories.put_player_avatar(story, <<255, 216, 255>>, "image/jpeg")
+
+      assert {<<255, 216, 255>>, "image/jpeg"} = Stories.get_player_avatar(story.id)
+      assert Stories.get_story!(story.id).player_avatar_type == "image/jpeg"
+
+      assert_receive {:story_updated,
+                      %Story{player_avatar_type: "image/jpeg", player_avatar: nil}}
+    end
+
+    test "put_character_board/3 stores the sheet and broadcasts without the binary" do
+      story = story_fixture()
+      character = character_fixture(story)
+      Stories.subscribe(story.id)
+
+      assert {:ok, %Character{board_type: "image/jpeg"}} =
+               Stories.put_character_board(character, <<1, 2, 3>>, "image/jpeg")
+
+      assert_receive {:character_updated, %Character{board_type: "image/jpeg", board: nil}}
+      assert {<<1, 2, 3>>, "image/jpeg"} = Stories.get_board(character.id)
+    end
+
+    test "put_player_board/3 stores the sheet and broadcasts without the binary" do
+      story = story_fixture()
+      Stories.subscribe(story.id)
+
+      assert {:ok, %Story{player_board_type: "image/jpeg", player_board: nil}} =
+               Stories.put_player_board(story, <<1, 2, 3>>, "image/jpeg")
+
+      assert {<<1, 2, 3>>, "image/jpeg"} = Stories.get_player_board(story.id)
+      assert_receive {:story_updated, %Story{player_board_type: "image/jpeg", player_board: nil}}
+    end
+
+    test "get_board/1 and get_player_board/1 are nil when no sheet has been painted" do
+      story = story_fixture()
+      character = character_fixture(story)
+
+      assert Stories.get_board(character.id) == nil
+      assert Stories.get_player_board(story.id) == nil
+    end
+
+    test "get_player_avatar/1 is nil when the player has no portrait" do
+      story = story_fixture()
+      assert Stories.get_player_avatar(story.id) == nil
+    end
+
     test "get_avatar/1 is nil for characters without a portrait" do
       story = story_fixture()
       character = character_fixture(story)
@@ -327,6 +377,33 @@ defmodule AgenticStories.StoriesTest do
 
       assert_receive {:character_updated,
                       %Character{energy: 5, avatar_type: "image/jpeg", avatar: nil}}
+    end
+  end
+
+  describe "describe_player/2" do
+    test "persists how the player looks now" do
+      story = story_fixture(%{protagonist: "Jack, who keeps the light."})
+      Stories.subscribe(story.id)
+
+      assert {:ok, %Story{player_appearance: "shirtsleeves, salt in his hair"}} =
+               Stories.describe_player(story, "shirtsleeves, salt in his hair")
+
+      assert Stories.get_story!(story.id).player_appearance == "shirtsleeves, salt in his hair"
+      assert_receive {:story_updated, %Story{player_appearance: "shirtsleeves, salt in his hair"}}
+    end
+  end
+
+  describe "describe_character/2" do
+    test "persists and broadcasts a new appearance" do
+      story = story_fixture()
+      character = character_fixture(story, %{appearance: "an oilskin coat"})
+      Stories.subscribe(story.id)
+
+      assert {:ok, %Character{appearance: "a red silk dress"}} =
+               Stories.describe_character(character, "a red silk dress")
+
+      assert Stories.get_character!(character.id).appearance == "a red silk dress"
+      assert_receive {:character_updated, %Character{appearance: "a red silk dress"}}
     end
   end
 

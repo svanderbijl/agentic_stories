@@ -18,8 +18,9 @@ defmodule AgenticStories.Imagery do
   def generate(prompt) when is_binary(prompt), do: adapter().generate(prompt)
 
   @doc """
-  Generates a scene using up to three reference images (character portraits),
-  so the people in the plate are the people on the cast cards.
+  Composites up to three reference images. Venice's multi-edit treats the
+  first as the canvas, so callers send character portraits first — a
+  generated scene in that slot invents a new cast every plate.
   """
   @spec compose(String.t(), [image()]) :: {:ok, image()} | {:error, term()}
   def compose(prompt, references) when is_binary(prompt) and is_list(references) do

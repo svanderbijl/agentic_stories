@@ -21,6 +21,9 @@ defmodule AgenticStoriesWeb.Router do
     live "/stories/:id", StoryLive, :show
     get "/stories/:id/read", ReaderController, :show
     get "/avatars/:id", AvatarController, :show
+    get "/player-avatars/:id", AvatarController, :player
+    get "/boards/:id", BoardController, :show
+    get "/player-boards/:id", BoardController, :player
     get "/plates/:id", PlateController, :show
   end
 

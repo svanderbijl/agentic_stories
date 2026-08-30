@@ -41,6 +41,7 @@ defmodule AgenticStories.Engine.WeaverTest do
         "name" => "Old Tosk",
         "persona" => "A retired diver.",
         "voice" => "Slow.",
+        "appearance" => "Weathered, salt-white beard, oilskin coat.",
         "location" => "The Lamp Room"
       }
     ]
@@ -53,6 +54,8 @@ defmodule AgenticStories.Engine.WeaverTest do
       expect(LLM.Mock, :chat, fn %Request{} = request ->
         assert request.model == LLM.weaver_model()
         assert request.system =~ "Weaver"
+        assert request.system =~ "If the seed describes how they look, copy that exactly"
+        assert request.system =~ "a red dress in the seed is a"
         assert [%{role: :user, content: content}] = request.messages
         assert content =~ story.seed
 
@@ -99,19 +102,29 @@ defmodule AgenticStories.Engine.WeaverTest do
         {:ok, %Response{text: Jason.encode!(@blueprint)}}
       end)
 
-      expect(Imagery.Mock, :generate, 2, fn prompt ->
+      expect(Imagery.Mock, :generate, 3, fn prompt ->
         assert prompt =~ "portrait"
         assert prompt =~ "quietly ominous"
         {:ok, %{binary: <<255, 216, 255>>, content_type: "image/jpeg"}}
       end)
 
-      # The opening plate is painted after the portraits, so it composes
-      # around them rather than racing them into an empty room. Only Maren
+      # A sheet per likeness (player + two characters), then the opening
+      # plate composes around those sheets rather than racing them into
+      # an empty room. The player leads (they are in every picture); Maren
       # is on The Shore; Old Tosk is up in the lamp room and stays out of it.
-      expect(Imagery.Mock, :compose, fn prompt, references ->
-        assert [%{content_type: "image/jpeg"}] = references
-        assert prompt =~ "source image 1: Maren"
-        refute prompt =~ "Old Tosk"
+      expect(Imagery.Mock, :compose, 4, fn prompt, references ->
+        if String.contains?(prompt, "CHARACTER SHEET LAYOUT") do
+          assert length(references) == 1
+          assert prompt =~ "exact visual identity"
+        else
+          assert [player, maren] = references
+          assert player.content_type == "image/jpeg"
+          assert maren.content_type == "image/jpeg"
+          assert prompt =~ "source image 1: the player"
+          assert prompt =~ "source image 2: Maren"
+          refute prompt =~ "Old Tosk"
+        end
+
         {:ok, %{binary: <<255, 216, 255>>, content_type: "image/jpeg"}}
       end)
 
@@ -119,6 +132,12 @@ defmodule AgenticStories.Engine.WeaverTest do
 
       assert_receive {:character_updated, %Character{avatar_type: "image/jpeg"}}, 2_000
       assert_receive {:character_updated, %Character{avatar_type: "image/jpeg"}}, 2_000
+
+      assert {<<255, 216, 255>>, "image/jpeg"} = Stories.get_player_board(story.id)
+
+      assert story.id
+             |> Stories.list_characters()
+             |> Enum.all?(&is_binary(&1.board_type))
 
       # the opening scene earned its establishing plate
       assert_receive {:message_created, %{kind: :illustration, content: "The Shore"}}, 2_000
@@ -199,7 +218,13 @@ defmodule AgenticStories.Engine.WeaverTest do
                  appearance: "Wind-burned, dark braid, a coat two sizes too big.",
                  entrance: "You are the woman walking up from the tideline."
                },
-               %{location: "The Lamp Room", agenda: nil, arc: nil, appearance: nil, entrance: nil}
+               %{
+                 location: "The Lamp Room",
+                 agenda: nil,
+                 arc: nil,
+                 appearance: "Weathered, salt-white beard, oilskin coat.",
+                 entrance: nil
+               }
              ] = blueprint.characters
     end
 
@@ -227,6 +252,31 @@ defmodule AgenticStories.Engine.WeaverTest do
 
       undescribed = %AgenticStories.Stories.Character{name: "Tosk", persona: "A diver."}
       refute Weaver.avatar_prompt(story, undescribed) =~ "How they look"
+
+      told = %Story{
+        tone: "quietly ominous",
+        protagonist: "Jack, who keeps the light and lives alone."
+      }
+
+      assert Weaver.player_avatar_prompt(told) =~ "whom the story addresses as \"you\""
+      assert Weaver.player_avatar_prompt(told) =~ "Jack, who keeps the light"
+
+      sheet = Weaver.board_prompt(story, described)
+      assert sheet =~ "exact visual identity"
+      assert sheet =~ "CHARACTER SHEET LAYOUT"
+      assert sheet =~ "Maren"
+      assert sheet =~ "Wind-burned, dark braid."
+      assert sheet =~ "Full-Body Front View"
+      assert sheet =~ "Signature Details"
+      assert sheet =~ "Pose Reference"
+      assert sheet =~ "Proportion & Silhouette"
+      assert sheet =~ "CONSISTENCY RULE"
+      assert sheet =~ "no photorealistic transformation"
+
+      player_sheet = Weaver.player_board_prompt(told)
+      assert player_sheet =~ "whom the story addresses as \"you\""
+      assert player_sheet =~ "Jack, who keeps the light"
+      assert player_sheet =~ "CHARACTER SHEET LAYOUT"
     end
 
     test "drops malformed characters and rejects an empty cast" do
@@ -235,7 +285,12 @@ defmodule AgenticStories.Engine.WeaverTest do
 
       mixed =
         Map.put(@blueprint, "characters", [
-          %{"name" => "Maren", "persona" => "The keeper's sister."},
+          %{
+            "name" => "Maren",
+            "persona" => "The keeper's sister.",
+            "appearance" => "Wind-burned, dark braid, a coat two sizes too big."
+          },
+          %{"name" => "Tosk", "persona" => "A diver."},
           %{"persona" => "nameless"}
         ])
 

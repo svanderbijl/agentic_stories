@@ -7,7 +7,9 @@ defmodule AgenticStories.LLM.Venice do
   Two Venice-specific knobs are always set: `include_venice_system_prompt` is
   off (Venice would otherwise prepend its own system prompt to every
   character persona), and `strip_thinking_response` is on so reasoning models
-  return clean JSON without a thinking preamble.
+  return clean JSON without a thinking preamble. The driver also strips
+  thinking client-side — reasoning arriving with only a closing tag, or a
+  reply truncated mid-thought — so callers only ever see the final response.
 
   Block-level `cache:` flags become Anthropic-style `cache_control`
   breakpoints, which Venice honours on models that support prompt caching;
@@ -95,11 +97,31 @@ defmodule AgenticStories.LLM.Venice do
     choice = body |> Map.get("choices", []) |> List.first() || %{}
 
     %Response{
-      text: get_in(choice, ["message", "content"]) || "",
+      text: choice |> get_in(["message", "content"]) |> strip_thinking(),
       model: body["model"],
       stop_reason: choice["finish_reason"],
       usage: Map.get(body, "usage", %{})
     }
+  end
+
+  # Venice's `strip_thinking_response` handles a well-formed block, but
+  # reasoning models leak past it two ways: Qwen-family chat templates can
+  # emit reasoning with only a closing tag, and a response truncated inside
+  # `<think>` has no final prose at all. Only what follows the thinking may
+  # reach a story — a reply that never got past thinking is an empty reply.
+  defp strip_thinking(nil), do: ""
+
+  defp strip_thinking(text) do
+    if String.contains?(text, "<think>") or String.contains?(text, "</think>") do
+      text
+      |> String.split("</think>")
+      |> List.last()
+      |> String.split("<think>")
+      |> hd()
+      |> String.trim()
+    else
+      text
+    end
   end
 
   defp client do

@@ -361,6 +361,37 @@ defmodule AgenticStories.Engine.CharacterMindTest do
       assert {:ok, {:move, "The Shore", nil}} = CharacterMind.parse_decision("-> The Shore")
     end
 
+    # A model deep in its prose writes the paragraphs first and the arrow
+    # where the walking happens — the reply is still a departure, the prose
+    # around the arrow is the beat, and the marker itself never reaches the
+    # story as literal text.
+    test "an arrow after prose is still a move, and the prose is the beat" do
+      reply = """
+      She sets her drink down on the dresser.
+
+      "Don't wake me up early."
+
+      -> The Ranch House: She lingers at the doorway of the guest room.
+      """
+
+      assert {:ok, {:move, "The Ranch House", text}} = CharacterMind.parse_decision(reply)
+      assert text =~ "sets her drink down"
+      assert text =~ "Don't wake me up early"
+      assert text =~ "She lingers at the doorway"
+      refute text =~ "->"
+      refute text =~ "The Ranch House"
+    end
+
+    test "prose on both sides of the arrow line stays in the beat" do
+      reply =
+        ~s("I'm not running. I'm just moving."\n\n-> The Shore\n\nShe doesn't stop until they reach the water.)
+
+      assert {:ok, {:move, "The Shore", text}} = CharacterMind.parse_decision(reply)
+      assert text =~ "I'm not running"
+      assert text =~ "reach the water"
+      refute text =~ "->"
+    end
+
     test "silence and an empty reply are both a wait" do
       assert {:ok, :wait} = CharacterMind.parse_decision("silence")
       assert {:ok, :wait} = CharacterMind.parse_decision("Silence")

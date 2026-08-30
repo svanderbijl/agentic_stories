@@ -29,6 +29,11 @@ defmodule AgenticStories.Stories.Character do
     # Stories.get_avatar/1. A non-nil avatar_type is the "has an avatar" flag.
     field :avatar, :binary, load_in_query: false
     field :avatar_type, :string
+    # Full character-design sheet, composed from the portrait (and refreshed
+    # when they change clothes). Fetch with Stories.get_board/1; a non-nil
+    # board_type is the "has a sheet" flag the UI clicks through to.
+    field :board, :binary, load_in_query: false
+    field :board_type, :string
     # Long-term memory lives in append-only CharacterMemory blocks;
     # memory_beats counts how many witnessed beats are already folded in.
     field :memory_beats, :integer, default: 0
@@ -59,5 +64,9 @@ defmodule AgenticStories.Stories.Character do
 
   def avatar_changeset(character, binary, content_type) do
     change(character, avatar: binary, avatar_type: content_type)
+  end
+
+  def board_changeset(character, binary, content_type) do
+    change(character, board: binary, board_type: content_type)
   end
 end

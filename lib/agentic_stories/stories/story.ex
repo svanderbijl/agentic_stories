@@ -21,6 +21,16 @@ defmodule AgenticStories.Stories.Story do
     field :style, :string
     field :status, Ecto.Enum, values: [:weaving, :live, :finished, :failed], default: :weaving
     field :failure_reason, :string
+    # Likeness for plates (and the "You" card). Fetch the binary with
+    # Stories.get_player_avatar/1; a non-nil player_avatar_type is the flag.
+    field :player_avatar, :binary, load_in_query: false
+    field :player_avatar_type, :string
+    # Full character-design sheet for the player, same as the cast's boards.
+    # Fetch with Stories.get_player_board/1.
+    field :player_board, :binary, load_in_query: false
+    field :player_board_type, :string
+    # How the player looks now. Nil falls back to the woven `protagonist`.
+    field :player_appearance, :string
 
     has_many :characters, AgenticStories.Stories.Character
     has_many :messages, AgenticStories.Stories.Message
@@ -51,5 +61,13 @@ defmodule AgenticStories.Stories.Story do
 
   def finish_changeset(story) do
     change(story, status: :finished)
+  end
+
+  def player_avatar_changeset(story, binary, content_type) do
+    change(story, player_avatar: binary, player_avatar_type: content_type)
+  end
+
+  def player_board_changeset(story, binary, content_type) do
+    change(story, player_board: binary, player_board_type: content_type)
   end
 end

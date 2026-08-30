@@ -73,6 +73,32 @@ defmodule AgenticStoriesWeb.StoryLiveTest do
       refute ctx.html =~ "finally tells it"
     end
 
+    test "clicking a portrait opens the character sheet", ctx do
+      {:ok, _} = Stories.put_character_avatar(ctx.character, <<255, 216, 255>>, "image/jpeg")
+      {:ok, character} = Stories.put_character_board(ctx.character, <<1, 2, 3>>, "image/jpeg")
+
+      :sys.get_state(ctx.view.pid)
+      html = render(ctx.view)
+
+      assert has_element?(ctx.view, "#aside-board-#{character.id}")
+      refute has_element?(ctx.view, "#board-modal")
+      assert html =~ ~p"/avatars/#{character.id}"
+
+      ctx.view
+      |> element("#aside-board-#{character.id}")
+      |> render_click()
+
+      assert has_element?(ctx.view, "#board-modal")
+      assert has_element?(ctx.view, "#board-modal-image")
+      assert render(ctx.view) =~ ~p"/boards/#{character.id}"
+
+      ctx.view
+      |> element("#board-modal-close")
+      |> render_click()
+
+      refute has_element?(ctx.view, "#board-modal")
+    end
+
     test "a thinking signal shows the quill on the cast", ctx do
       character = ctx.character
 
@@ -271,6 +297,36 @@ defmodule AgenticStoriesWeb.StoryLiveTest do
 
       assert_redirect(view, "/")
       assert AgenticStories.Stories.list_stories() == []
+    end
+  end
+
+  describe "the player's sheet" do
+    test "clicking the You portrait opens the player's character sheet", %{conn: conn} do
+      story =
+        story_fixture(%{protagonist: "Jack, who keeps the light and lives alone."})
+
+      {:ok, story} = Stories.put_player_avatar(story, <<255, 216, 255>>, "image/jpeg")
+      {:ok, story} = Stories.put_player_board(story, <<1, 2, 3>>, "image/jpeg")
+
+      {:ok, view, html} = live(conn, ~p"/stories/#{story}")
+
+      assert html =~ "You"
+      assert html =~ "Jack, who keeps the light"
+      assert has_element?(view, "#aside-player-board")
+      refute has_element?(view, "#board-modal")
+
+      view
+      |> element("#aside-player-board")
+      |> render_click()
+
+      assert has_element?(view, "#board-modal")
+      assert render(view) =~ ~p"/player-boards/#{story.id}"
+
+      view
+      |> element("#board-modal-close")
+      |> render_click()
+
+      refute has_element?(view, "#board-modal")
     end
   end
 

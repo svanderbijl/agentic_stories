@@ -42,7 +42,13 @@ defmodule AgenticStoriesWeb.HomeLiveTest do
              "opening" => "The tide pulls back.",
              "opening_location" => "The Shore",
              "locations" => [%{"name" => "The Shore", "description" => "Wet shingle."}],
-             "characters" => [%{"name" => "Maren", "persona" => "The keeper's sister."}]
+             "characters" => [
+               %{
+                 "name" => "Maren",
+                 "persona" => "The keeper's sister.",
+                 "appearance" => "Wind-burned, dark braid, a coat two sizes too big."
+               }
+             ]
            })
        }}
     end)

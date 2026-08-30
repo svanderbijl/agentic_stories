@@ -33,7 +33,8 @@ defmodule AgenticStoriesWeb.StoryLive do
         thinking: MapSet.new(),
         recap: nil,
         painting: false,
-        can_paint?: Imagery.enabled?()
+        can_paint?: Imagery.enabled?(),
+        board: nil
       )
       |> stream(:beats, beats)
 
@@ -91,6 +92,21 @@ defmodule AgenticStoriesWeb.StoryLive do
     else
       _ -> {:noreply, socket}
     end
+  end
+
+  def handle_event("show_board", %{"id" => "player"}, socket) do
+    {:noreply, assign(socket, board: :player)}
+  end
+
+  def handle_event("show_board", %{"id" => id}, socket) do
+    case Integer.parse(id) do
+      {id, ""} -> {:noreply, assign(socket, board: {:character, id})}
+      _ -> {:noreply, socket}
+    end
+  end
+
+  def handle_event("hide_board", _params, socket) do
+    {:noreply, assign(socket, board: nil)}
   end
 
   def handle_event("end_story", _params, socket) do
@@ -155,6 +171,10 @@ defmodule AgenticStoriesWeb.StoryLive do
     {:noreply, assign(socket, locations: Stories.list_locations(socket.assigns.story.id))}
   end
 
+  def handle_info({:location_updated, %Location{}}, socket) do
+    {:noreply, assign(socket, locations: Stories.list_locations(socket.assigns.story.id))}
+  end
+
   def handle_info({:story_deleted, %Story{}}, socket) do
     {:noreply,
      socket
@@ -200,6 +220,13 @@ defmodule AgenticStoriesWeb.StoryLive do
     is_nil(where) or is_nil(player) or where == player
   end
 
+  defp player_shown?(%Story{protagonist: protagonist})
+       when is_binary(protagonist) and protagonist != "",
+       do: true
+
+  defp player_shown?(%Story{player_avatar_type: type}) when is_binary(type), do: true
+  defp player_shown?(%Story{}), do: false
+
   defp format_tokens(count) when count >= 1_000, do: "#{Float.round(count / 1_000, 1)}k"
   defp format_tokens(count), do: "#{count}"
 
@@ -221,6 +248,7 @@ defmodule AgenticStoriesWeb.StoryLive do
         tokens={@tokens}
         painting={@painting}
         can_paint?={@can_paint?}
+        board={@board}
       />
     </Layouts.app>
     """
@@ -236,6 +264,7 @@ defmodule AgenticStoriesWeb.StoryLive do
   attr :tokens, :map, default: nil
   attr :painting, :boolean, default: false
   attr :can_paint?, :boolean, default: false
+  attr :board, :any, default: nil
 
   defp scene(assigns) do
     ~H"""
@@ -269,11 +298,13 @@ defmodule AgenticStoriesWeb.StoryLive do
                     here={here?(character, @story)}
                     thinking={MapSet.member?(@thinking, character.id)}
                     max_energy={@max_energy}
+                    id_prefix="chip"
                   />
                 </span>
                 <.icon name="hero-chevron-down-micro" class="size-3 text-ink-faint" />
               </summary>
               <div class="mt-3 grid gap-2 sm:grid-cols-2">
+                <.player_card :if={player_shown?(@story)} story={@story} id_prefix="mobile-player" />
                 <.cast_card
                   :for={character <- @characters}
                   character={character}
@@ -281,6 +312,7 @@ defmodule AgenticStoriesWeb.StoryLive do
                   thinking={MapSet.member?(@thinking, character.id)}
                   max_energy={@max_energy}
                   seekable={@story.status == :live}
+                  id_prefix="mobile"
                 />
                 <.location_card
                   :for={location <- @locations}
@@ -421,6 +453,7 @@ defmodule AgenticStoriesWeb.StoryLive do
             <div class="h-px w-full bg-edge/80"></div>
           </div>
           <div class="mt-4 space-y-3">
+            <.player_card :if={player_shown?(@story)} story={@story} id_prefix="aside-player" />
             <.cast_card
               :for={character <- @characters}
               character={character}
@@ -428,6 +461,7 @@ defmodule AgenticStoriesWeb.StoryLive do
               thinking={MapSet.member?(@thinking, character.id)}
               max_energy={@max_energy}
               seekable={@story.status == :live}
+              id_prefix="aside"
             />
           </div>
 
@@ -459,6 +493,8 @@ defmodule AgenticStoriesWeb.StoryLive do
           </div>
         </div>
       </aside>
+
+      <.board_modal :if={@board} board={@board} story={@story} characters={@characters} />
     </div>
     """
   end

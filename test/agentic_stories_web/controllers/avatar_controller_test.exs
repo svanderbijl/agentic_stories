@@ -26,4 +26,19 @@ defmodule AgenticStoriesWeb.AvatarControllerTest do
   test "404s for nonsense ids", %{conn: conn} do
     assert conn |> get(~p"/avatars/not-a-character") |> response(404)
   end
+
+  test "serves the player's stored portrait", %{conn: conn} do
+    story = story_fixture()
+    {:ok, _} = Stories.put_player_avatar(story, <<255, 216, 255>>, "image/jpeg")
+
+    conn = get(conn, ~p"/player-avatars/#{story.id}")
+
+    assert response(conn, 200) == <<255, 216, 255>>
+    assert response_content_type(conn, :jpeg) =~ "image/jpeg"
+  end
+
+  test "404s when the player has no portrait", %{conn: conn} do
+    story = story_fixture()
+    assert conn |> get(~p"/player-avatars/#{story.id}") |> response(404)
+  end
 end
