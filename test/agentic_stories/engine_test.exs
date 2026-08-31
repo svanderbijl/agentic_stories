@@ -648,7 +648,7 @@ defmodule AgenticStories.EngineTest do
       {:ok, _} = Stories.put_character_avatar(character, <<255>>, "image/jpeg")
 
       expect(AgenticStories.Imagery.Mock, :compose, fn _prompt, _references ->
-        {:error, {:http_error, 422, %{}}}
+        {:error, {:http_error, 422, %{"error" => "Your prompt violates the content policy"}}}
       end)
 
       expect(AgenticStories.Imagery.Mock, :generate, fn prompt ->
@@ -656,7 +656,48 @@ defmodule AgenticStories.EngineTest do
         {:ok, %{binary: <<9>>, content_type: "image/jpeg"}}
       end)
 
-      assert :ok = Engine.commission_plate(ctx.story, ctx.shore, "The Shore", "The tide turns.")
+      log =
+        ExUnit.CaptureLog.capture_log(fn ->
+          assert :ok =
+                   Engine.commission_plate(ctx.story, ctx.shore, "The Shore", "The tide turns.")
+
+          assert_receive {:message_created, %Message{kind: :illustration}}, 1_000
+        end)
+
+      assert log =~ "no composition for"
+      assert log =~ "Your prompt violates the content policy"
+      assert log =~ "prompt:"
+      assert log =~ "The Shore — Wet shingle."
+      assert log =~ "The tide turns."
+    end
+
+    test "a long tableau is clipped so the compose prompt fits the edit model", ctx do
+      character =
+        character_fixture(ctx.story, %{
+          name: "Old Tosk",
+          location_id: ctx.shore.id,
+          appearance: "Weathered, salt-white beard, oilskin coat."
+        })
+
+      {:ok, _} = Stories.put_character_avatar(character, <<255>>, "image/jpeg")
+
+      scene =
+        "An establishing view of the wet shingle under a low sky. " <>
+          String.duplicate(
+            "Old Tosk stands at the waterline, oilskin snapping in the wind. ",
+            30
+          )
+
+      expect(AgenticStories.Imagery.Mock, :compose, fn prompt, _references ->
+        assert String.length(prompt) <= 1500
+        assert prompt =~ "source image 1: Old Tosk"
+        assert prompt =~ "FRONT VIEW"
+        assert prompt =~ "An establishing view of the wet shingle"
+        {:ok, %{binary: <<9>>, content_type: "image/jpeg"}}
+      end)
+
+      assert :ok = Engine.commission_plate(ctx.story, ctx.shore, "The Shore", scene)
+
       assert_receive {:message_created, %Message{kind: :illustration}}, 1_000
     end
 

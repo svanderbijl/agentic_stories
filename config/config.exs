@@ -10,13 +10,12 @@ import Config
 # LLM provider port: which driver to use and which models each part of the
 # engine talks to. The Weaver gets a capable model; character ticks run on a
 # cheap/fast one.
-# Text provider: Venice.ai (uncensored). The Weaver and Director get Venice's
-# smart uncensored reasoning model; characters run on Gemma 4 Uncensored —
-# non-reasoning and only ~4B active params per token, so ticks are fast and
-# pay no hidden thinking tokens. NOT the "e2ee-…-p" TEE variant of the same
-# model: E2EE models need a client-side encryption handshake and streaming
-# the Venice driver doesn't speak. ("venice-uncensored-1-2" and
-# "venice-uncensored-role-play" remain the Venice-tuned alternatives.)
+# Text provider: Venice.ai (uncensored). The Weaver and Director run on
+# Qwen 3.8 27B (qwen-3-8-27b); characters run on Gemma 4 26B A4B Uncensored
+# (e2ee-gemma-4-26b-a4b-uncensored-p) — non-reasoning and only ~4B active
+# params per token, so ticks are fast and pay no hidden thinking tokens.
+# ("venice-uncensored-1-2" and "venice-uncensored-role-play" remain the
+# Venice-tuned alternatives.)
 # The other drivers remain available:
 #   AgenticStories.LLM.Grok — xAI direct, e.g. weaver_model: "grok-4.6",
 #     character_model: "grok-4.20-0309-non-reasoning"
@@ -27,9 +26,9 @@ import Config
 #     "cognitivecomputations/dolphin-mistral-24b-venice-edition"
 config :agentic_stories, AgenticStories.LLM,
   adapter: AgenticStories.LLM.Venice,
-  weaver_model: "aion-labs-aion-3-0",
-  character_model: "gemma-4-uncensored",
-  director_model: "aion-labs-aion-3-0",
+  weaver_model: "qwen-3-8-27b",
+  character_model: "e2ee-gemma-4-26b-a4b-uncensored-p",
+  director_model: "qwen-3-8-27b",
   # sampling temperature for character prose only (ticks + journals);
   # remove to use the provider's default. Claude 5-family models reject
   # the parameter — leave it unset when character_model is one of those.
@@ -48,9 +47,14 @@ config :agentic_stories, AgenticStories.Imagery,
 # Model names are config, not code. `:model` renders a plate from words;
 # `:edit_model` composes one around the cast's portraits, which is what puts
 # the actual characters in the picture (see Imagery.compose/2).
+# Seedream (ByteDance, anonymized) is not uncensored: its edit variant
+# 422s suggestive scenes as a provider content-policy reject even with
+# safe_mode: false, then the text-only generate fallback "succeeds"
+# without the cast in the plate. Use Venice-private uncensored models:
+# lustify-v8 for portraits / word plates, qwen-edit-uncensored for compose.
 config :agentic_stories, AgenticStories.Imagery.Venice,
-  model: "seedream-v5-lite",
-  edit_model: "seedream-v5-lite-edit"
+  model: "lustify-v8",
+  edit_model: "qwen-edit-uncensored"
 
 # The energy model. Ticks cost energy; the player is the only net source of
 # it. A speaking character passes chatter_energy to ONE other cast member (the

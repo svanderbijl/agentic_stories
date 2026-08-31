@@ -791,7 +791,7 @@ defmodule AgenticStories.Engine do
         {:ok, image}
 
       {:error, reason} ->
-        Logger.warning("no likeness compose for #{who}: #{inspect(reason)}")
+        Logger.warning("no likeness compose for #{who}: #{inspect(reason)}\n\nprompt:\n#{prompt}")
         :error
     end
   end
@@ -882,16 +882,21 @@ defmodule AgenticStories.Engine do
         portraits ->
           subjects = Enum.map(portraits, &elem(&1, 0))
           references = Enum.map(portraits, &elem(&1, 1))
+          prompt = plate_composition(story, location, scene, subjects)
 
-          case Imagery.compose(plate_composition(story, location, scene, subjects), references) do
+          case Imagery.compose(prompt, references) do
             {:ok, image} ->
               {:ok, image}
 
             {:error, reason} ->
-              # Say why. A silent fallback here is exactly how a bad edit
-              # model or a rejected payload hides for weeks as the vague
-              # complaint "the plates never have anyone in them".
-              Logger.warning("no composition for \"#{story.title}\": #{inspect(reason)}")
+              # Say why, and dump the prompt — a 422 from Venice is a
+              # content-policy reject of these exact words, and a silent
+              # fallback is how a bad edit model hides for weeks as
+              # "the plates never have anyone in them".
+              Logger.warning(
+                "no composition for \"#{story.title}\": #{inspect(reason)}\n\nprompt:\n#{prompt}"
+              )
+
               Imagery.generate(plate_art_direction(story, location, scene, present))
           end
       end
@@ -970,28 +975,38 @@ defmodule AgenticStories.Engine do
     end)
   end
 
+  # Venice's uncensored edit (`qwen-edit-uncensored`) and generate
+  # (`lustify-v8`) models both 400 a prompt over 1500 characters.
+  @image_prompt_limit 1500
+
   # Words only. The cast leads: an art direction that opens with camera talk
   # and buries the people at the bottom gets back an empty room. Looks on
   # the character are current; the scene still wins if the record is newer.
   defp plate_art_direction(story, location, scene, present) do
-    """
-    #{cast_clause(story, present)}#{place_clause(location)}What is happening: #{scene}
+    fit_image_prompt(
+      fn scene ->
+        """
+        #{cast_clause(story, present)}#{place_clause(location)}What is happening: #{scene}
 
-    Paint it as a photorealistic candid film still, caught mid-action: the
-    people above clearly visible in frame, full-length, natural light,
-    shallow depth of field, no text or lettering anywhere. Nobody looks at
-    the camera — they look at each other or at what they are doing. The
-    story's tone: #{story.tone}. Faces, hair, and builds match the
-    descriptions; clothing, pose, and expression are what the scene says
-    they are, even when that disagrees with the descriptions above.
-    """
+        Paint it as a photorealistic candid film still, caught mid-action: the
+        people above clearly visible in frame, full-length, natural light,
+        shallow depth of field, no text or lettering anywhere. Nobody looks at
+        the camera — they look at each other or at what they are doing. The
+        story's tone: #{story.tone}. Faces, hair, and builds match the
+        descriptions; clothing, pose, and expression are what the scene says
+        they are, even when that disagrees with the descriptions above.
+        """
+      end,
+      scene
+    )
   end
 
   # With reference sheets this is an EDIT whose first source image is the
   # canvas. Name the people in the order their sheets were sent. Likeness
   # comes from the FRONT VIEW on those sheets; clothing, pose, and crop
   # come from the scene — otherwise every plate is a restaged character
-  # board, four views of the same person in a gray studio.
+  # board, four views of the same person in a gray studio. Keep the
+  # instructions short: the edit model caps the whole prompt at 1500.
   defp plate_composition(story, location, scene, subjects) do
     people =
       subjects
@@ -1006,26 +1021,52 @@ defmodule AgenticStories.Engine do
     named_player? = Enum.any?(subjects, &(&1.name == "the player"))
     player_note = if named_player?, do: "", else: player_line(story) <> "\n"
 
-    """
-    Compose the people from the source images into one new photorealistic
-    scene together — same faces, same builds, unmistakably these people.
-    Each source image is a character reference sheet (or a portrait if no
-    sheet exists). It gives likeness only: use the FRONT VIEW of that
-    person for face, body, hair, and how they look now. Do not copy the
-    sheet's layout, labels, multiple views, gray studio background, crop,
-    camera, pose, or gaze. Do not put more than one copy of the same
-    person in the frame. Paint a new full-length candid film still, caught
-    mid-action. Nobody looks at the camera — they look at each other or at
-    what they are doing, as the scene describes. Clothing, posture, and
-    expression are what the scene below says they are, even when that
-    disagrees with the sheet or the original dress.
+    fit_image_prompt(
+      fn scene ->
+        """
+        Photorealistic candid film still of these people together — same faces, same builds. Source images are character reference sheets (or portraits): likeness only from the FRONT VIEW (face, body, hair). Do not copy the sheet's layout, labels, extra views, studio, crop, pose, or gaze. One of each person, full-length, mid-action. Nobody looks at the camera. Clothing, posture, and expression follow the scene.
 
-    #{people}
+        #{people}
 
-    #{player_note}#{place_clause(location)}What is happening: #{scene}
+        #{player_note}#{place_clause(location)}What is happening: #{scene}
 
-    Natural light, no text or lettering anywhere. The story's tone: #{story.tone}.
-    """
+        Natural light, no text. Tone: #{story.tone}.
+        """
+      end,
+      scene
+    )
+  end
+
+  defp fit_image_prompt(render, scene) do
+    prompt = render.(scene)
+
+    if String.length(prompt) <= @image_prompt_limit do
+      prompt
+    else
+      over = String.length(prompt) - @image_prompt_limit
+      fitted = render.(within(scene, max(String.length(scene) - over, 0)))
+
+      if String.length(fitted) <= @image_prompt_limit do
+        fitted
+      else
+        String.slice(fitted, 0, @image_prompt_limit)
+      end
+    end
+  end
+
+  defp within(_text, max) when max <= 0, do: ""
+
+  defp within(text, max) do
+    if String.length(text) <= max do
+      text
+    else
+      clipped = String.slice(text, 0, max)
+
+      case String.replace(clipped, ~r/\s+\S*\z/u, "") do
+        "" -> String.trim_trailing(clipped)
+        trimmed -> String.trim_trailing(trimmed)
+      end
+    end
   end
 
   defp place_clause(nil), do: ""
