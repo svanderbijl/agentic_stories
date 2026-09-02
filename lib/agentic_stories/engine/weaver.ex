@@ -103,154 +103,21 @@ defmodule AgenticStories.Engine.Weaver do
     """
   end
 
+  # Venice's edit model (`qwen-edit-uncensored`) 400s a prompt over 1500
+  # characters. The whole board prompt — looks, tone, and this layout —
+  # has to fit. A long production brief is why sheets stopped landing.
   @sheet_layout """
   CHARACTER SHEET LAYOUT
+  Wide landscape, studio-gray, photorealistic. New image: do not keep the source crop or background.
 
-  Create one clean, organized character-design sheet containing multiple clearly separated reference views and detail panels. Wide landscape composition.
+  Same person, every panel:
+  - Full-body FRONT, 3/4, SIDE, BACK — head to feet, as described
+  - Face close-ups: front, 3/4, profile
+  Small labels: FRONT, 3/4, PROFILE, BACK, FACE.
 
-  This is a NEW image: a full production character-design sheet on a clean studio-gray background. Do not keep the source image's crop, camera, or background.
+  Dress exactly as the description says — clothes if it names them, undressed if it says so. If the reference is a head-and-shoulders crop, complete the body from the description.
 
-  1. Full-Body Front View
-
-  - Neutral standing pose
-  - Entire character visible from head to feet
-  - Arms naturally positioned
-  - Clear view of complete outfit, footwear and accessories
-
-  2. Full-Body 3/4 View
-
-  - Same character and exact same design
-  - Clearly show depth, silhouette and clothing construction
-
-  3. Full-Body Side Profile
-
-  - Exact character proportions
-  - Clearly show hairstyle, nose profile, outfit silhouette and accessories
-
-  4. Back View
-
-  - Complete rear view
-  - Show the back of hairstyle, clothing, seams, patterns, accessories and footwear
-
-  5. Facial Identity Panel
-  Include several clean close-up facial references:
-
-  - Front-facing neutral expression
-  - 3/4 facial view
-  - Side-profile face
-  - Slight smile
-  - Serious / focused expression
-  - Happy / expressive expression
-
-  Keep the facial identity extremely consistent across every expression.
-
-  6. Hair Reference
-  Show the hairstyle clearly from:
-
-  - Front
-  - 3/4
-  - Side
-  - Back
-
-  Preserve the exact hairstyle, length, volume, texture, bangs, curls/waves and signature hair details from the reference.
-
-  7. Outfit Breakdown
-  Create clean isolated visual callouts of:
-
-  - Jacket/top
-  - Bottoms
-  - Shoes
-  - Gloves if present
-  - Belt or utility elements
-  - Jewelry
-  - Hair accessories
-  - Signature character accessories
-
-  Show important construction details, materials, patterns, fasteners, trims and distinctive design elements.
-
-  8. Signature Details
-  Create several small close-up detail panels for the most recognizable character elements, such as:
-
-  - Eyes
-  - Hair accessory
-  - Jewelry
-  - Emblem
-  - Bag
-  - Weapon/tool
-  - Special costume detail
-  - Unique facial feature
-
-  Only include details that actually exist in the reference.
-
-  9. Pose Reference
-  Show 3–4 simple full-body poses that preserve the exact same character design:
-
-  - Neutral standing
-  - Confident pose
-  - Walking / dynamic pose
-  - Natural relaxed pose
-
-  Keep anatomy and proportions consistent across all poses.
-
-  10. Proportion & Silhouette Reference
-  Include a clean neutral silhouette-style full-body view emphasizing:
-
-  - Overall height
-  - Head-to-body proportion
-  - Shoulder width
-  - Arm and leg proportions
-  - Overall character silhouette
-
-  Do not distort proportions simply to make the character more attractive.
-
-  PRESENTATION
-
-  Arrange everything on a single professional character-design reference board with a clean neutral studio background.
-
-  Use a structured editorial layout with clear spacing between panels. Every view should be large enough to study the character's identity and design details.
-
-  Use subtle professional labels such as:
-  “FRONT”
-  “3/4”
-  “PROFILE”
-  “BACK”
-  “FACE”
-  “HAIR”
-  “OUTFIT”
-  “DETAILS”
-  “POSES”
-  “PROPORTIONS”
-
-  Labels should be minimal, clean and secondary to the artwork.
-
-  VISUAL QUALITY
-
-  Premium animated-film character development sheet, sophisticated stylized character design, polished 3D/cartoon rendering, clean shape language, expressive facial construction, consistent anatomy, consistent proportions, detailed materials, refined clothing construction, believable lighting, crisp edges, professional concept-art presentation.
-
-  The sheet should look like an actual character development/reference document created for an animation, game, or visual production team, not like a random collage of images.
-
-  CONSISTENCY RULE
-
-  The most important requirement is character consistency.
-
-  Every panel must depict the exact same character with:
-
-  - identical face
-  - identical eyes
-  - identical hairstyle
-  - identical body proportions
-  - identical outfit
-  - identical colors
-  - identical accessories
-  - identical visual identity
-
-  Do not introduce new clothing, new accessories, alternate hairstyles, random design changes, or inconsistent facial features.
-
-  If a detail is not clearly visible in the reference image, do not invent a conflicting design. Keep it simple and consistent with the visible character.
-
-  NEGATIVE CONSTRAINTS
-
-  No character redesign, no identity drift, no different face between panels, no inconsistent hairstyle, no random outfit changes, no different body proportions, no extra accessories, no duplicate limbs, no malformed hands, no distorted anatomy, no unnecessary background elements, no photorealistic transformation, no text-heavy layout, no watermark, no logo.
+  Same face, hair, proportions, colors. No redesign, extra limbs, watermarks, or logos.
   """
 
   @doc """
@@ -262,15 +129,7 @@ defmodule AgenticStories.Engine.Weaver do
     looks = character.appearance || character.persona
 
     """
-    Using the attached reference image as the exact visual identity and design reference, create a professional, production-ready character reference sheet for #{character.name}.
-
-    #{looks}
-
-    The story's tone: #{story.tone}.
-
-    The character must remain visually consistent with the reference image. Preserve the exact recognizable identity, facial structure, hairstyle, hair color, eye design, skin tone, body proportions, clothing design, colors, accessories, and overall visual language. Do not redesign, beautify, age, or reinterpret the character.
-
-    How they look NOW, which this sheet must show: #{looks}. If the attached image shows earlier clothing, update clothes, hair, wounds, and accessories to match; keep the same face, body, and identity.
+    Using the attached image as the exact visual identity, paint a production character-design sheet for #{character.name}. Tone: #{story.tone}. How they look NOW: #{looks}. If the attached image shows earlier clothes, update clothes, hair, wounds, and accessories; keep the same face, body, and identity.
 
     #{@sheet_layout}
     """
@@ -281,15 +140,7 @@ defmodule AgenticStories.Engine.Weaver do
     looks = story.player_appearance || story.protagonist
 
     """
-    Using the attached reference image as the exact visual identity and design reference, create a professional, production-ready character reference sheet for the same character.
-
-    This is the player, whom the story addresses as "you": #{looks}
-
-    The story's tone: #{story.tone}.
-
-    The character must remain visually consistent with the reference image. Preserve the exact recognizable identity, facial structure, hairstyle, hair color, eye design, skin tone, body proportions, clothing design, colors, accessories, and overall visual language. Do not redesign, beautify, age, or reinterpret the character.
-
-    How they look NOW, which this sheet must show: #{looks}. If the attached image shows earlier clothing, update clothes, hair, wounds, and accessories to match; keep the same face, body, and identity.
+    Using the attached image as the exact visual identity, paint a production character-design sheet for the same character. This is the player, whom the story addresses as "you": #{looks}. Tone: #{story.tone}. If the attached image shows earlier clothes, update clothes, hair, wounds, and accessories; keep the same face, body, and identity.
 
     #{@sheet_layout}
     """

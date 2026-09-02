@@ -320,8 +320,16 @@ defmodule AgenticStories.EngineTest do
       assert Stories.get_story!(ctx.story.id).player_location_id == ctx.shore.id
 
       # …and so did she, visibly (a live agent is told through the same
-      # CharacterAgent.relocated path the summon above already covers)
+      # CharacterAgent.relocated path the summon above already covers).
+      # The follow beat is broadcast before the row is relocated, so wait
+      # for the character_updated — otherwise this flakes on a stale room.
+      invited_id = invited.id
+      shore_id = ctx.shore.id
       assert_receive {:message_created, %Message{content: "follows you to The Shore"}}, 1_000
+
+      assert_receive {:character_updated, %Character{id: ^invited_id, location_id: ^shore_id}},
+                     1_000
+
       assert Stories.get_character!(invited.id).location_id == ctx.shore.id
     end
 
@@ -526,7 +534,7 @@ defmodule AgenticStories.EngineTest do
 
       # Venice multi-edit treats image 1 as the canvas. That slot has to be
       # a person (the sheet): a generated scene there is how two plates grow
-      # two casts. Clothing still comes from the scene, not from the board.
+      # two casts. Clothes follow the named looks and the scene.
       expect(AgenticStories.Imagery.Mock, :compose, fn prompt, references ->
         assert prompt =~ "The Shore — Wet shingle."
         assert prompt =~ "source image 1: Old Tosk — Weathered, salt-white beard, oilskin coat."
@@ -534,6 +542,7 @@ defmodule AgenticStories.EngineTest do
         assert prompt =~ "FRONT VIEW"
         assert prompt =~ "same faces"
         assert prompt =~ "Clothing"
+        assert prompt =~ "including undress"
         assert prompt =~ "Nobody looks at the camera"
         assert prompt =~ "mid-action"
         assert prompt =~ "The tide turns."

@@ -992,9 +992,9 @@ defmodule AgenticStories.Engine do
         people above clearly visible in frame, full-length, natural light,
         shallow depth of field, no text or lettering anywhere. Nobody looks at
         the camera — they look at each other or at what they are doing. The
-        story's tone: #{story.tone}. Faces, hair, and builds match the
-        descriptions; clothing, pose, and expression are what the scene says
-        they are, even when that disagrees with the descriptions above.
+        story's tone: #{story.tone}. Faces, hair, builds, and clothes match
+        the descriptions unless the scene explicitly changes them — including
+        undress, when that is what they say. Pose and expression follow the scene.
         """
       end,
       scene
@@ -1003,9 +1003,10 @@ defmodule AgenticStories.Engine do
 
   # With reference sheets this is an EDIT whose first source image is the
   # canvas. Name the people in the order their sheets were sent. Likeness
-  # comes from the FRONT VIEW on those sheets; clothing, pose, and crop
-  # come from the scene — otherwise every plate is a restaged character
-  # board, four views of the same person in a gray studio. Keep the
+  # comes from the FRONT VIEW on those sheets. Pose and crop come from the
+  # scene — otherwise every plate is a restaged character board, four views
+  # of the same person in a gray studio. Clothes follow the named looks and
+  # the scene, including undress when that is what they say. Keep the
   # instructions short: the edit model caps the whole prompt at 1500.
   defp plate_composition(story, location, scene, subjects) do
     people =
@@ -1024,7 +1025,7 @@ defmodule AgenticStories.Engine do
     fit_image_prompt(
       fn scene ->
         """
-        Photorealistic candid film still of these people together — same faces, same builds. Source images are character reference sheets (or portraits): likeness only from the FRONT VIEW (face, body, hair). Do not copy the sheet's layout, labels, extra views, studio, crop, pose, or gaze. One of each person, full-length, mid-action. Nobody looks at the camera. Clothing, posture, and expression follow the scene.
+        Photorealistic candid film still of these people together — same faces, same builds. Source images are character reference sheets (or portraits): likeness only from the FRONT VIEW (face, body, hair). Do not copy the sheet's layout, labels, extra views, studio, crop, pose, or gaze. One of each person, full-length, mid-action. Nobody looks at the camera. Clothing follows the named looks and the scene — including undress, when that is what they say. Posture and expression follow the scene.
 
         #{people}
 
@@ -1083,7 +1084,7 @@ defmodule AgenticStories.Engine do
       |> Enum.join("\n")
 
     """
-    Who is in frame (face, hair, and build as described; clothing is whatever the scene below says):
+    Who is in frame (face, hair, build, and clothes as described; the scene may change clothes or undress them):
     #{lines}
     """
   end

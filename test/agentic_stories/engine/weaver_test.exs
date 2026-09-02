@@ -133,14 +133,15 @@ defmodule AgenticStories.Engine.WeaverTest do
       assert_receive {:character_updated, %Character{avatar_type: "image/jpeg"}}, 2_000
       assert_receive {:character_updated, %Character{avatar_type: "image/jpeg"}}, 2_000
 
+      # the opening plate waits for every sheet, so it is the signal that
+      # likeness compose has finished — portraits alone are not enough
+      assert_receive {:message_created, %{kind: :illustration, content: "The Shore"}}, 2_000
+
       assert {<<255, 216, 255>>, "image/jpeg"} = Stories.get_player_board(story.id)
 
       assert story.id
              |> Stories.list_characters()
              |> Enum.all?(&is_binary(&1.board_type))
-
-      # the opening scene earned its establishing plate
-      assert_receive {:message_created, %{kind: :illustration, content: "The Shore"}}, 2_000
     end
 
     test "a failed portrait leaves the character unpainted and the story fine" do
@@ -266,17 +267,35 @@ defmodule AgenticStories.Engine.WeaverTest do
       assert sheet =~ "CHARACTER SHEET LAYOUT"
       assert sheet =~ "Maren"
       assert sheet =~ "Wind-burned, dark braid."
-      assert sheet =~ "Full-Body Front View"
-      assert sheet =~ "Signature Details"
-      assert sheet =~ "Pose Reference"
-      assert sheet =~ "Proportion & Silhouette"
-      assert sheet =~ "CONSISTENCY RULE"
-      assert sheet =~ "no photorealistic transformation"
+      assert sheet =~ "Full-body FRONT"
+      assert sheet =~ "Dress exactly as the description says"
+      refute sheet =~ "Fully clothed"
+      assert String.length(sheet) <= 1500
 
       player_sheet = Weaver.player_board_prompt(told)
       assert player_sheet =~ "whom the story addresses as \"you\""
       assert player_sheet =~ "Jack, who keeps the light"
       assert player_sheet =~ "CHARACTER SHEET LAYOUT"
+      refute player_sheet =~ "Fully clothed"
+      assert String.length(player_sheet) <= 1500
+    end
+
+    test "a long appearance still leaves the board prompt inside the edit cap" do
+      looks =
+        "Wind-burned, dark braid, a coat two sizes too big, salt in the seams, " <>
+          "a scar at the left eyebrow, and the keeper's boots."
+
+      story = %Story{tone: "quietly ominous, salt-stained, a little cruel"}
+
+      character = %AgenticStories.Stories.Character{
+        name: "Maren of the Outer Light",
+        appearance: looks
+      }
+
+      assert String.length(Weaver.board_prompt(story, character)) <= 1500
+
+      told = %Story{tone: story.tone, protagonist: looks}
+      assert String.length(Weaver.player_board_prompt(told)) <= 1500
     end
 
     test "drops malformed characters and rejects an empty cast" do
