@@ -102,6 +102,28 @@ defmodule AgenticStories.StoriesTest do
       assert Stories.get_story!(story.id).status == :weaving
       assert Stories.list_messages(story.id) == []
     end
+
+    test "a solo story with no cast still goes live" do
+      story = weaving_story_fixture()
+
+      blueprint = %{
+        title: "The Door Below",
+        premise: "A keeper finds a door on the seabed.",
+        arc: "Down, through, and changed.",
+        tone: "quietly ominous",
+        style: "Spare prose.",
+        opening: "The tide pulls back further than it should.",
+        opening_location: "The Shore",
+        locations: [%{name: "The Shore", description: "Wet shingle."}],
+        characters: []
+      }
+
+      assert {:ok, %Story{status: :live}} = Stories.complete_weaving(story, blueprint)
+      assert Stories.list_characters(story.id) == []
+
+      assert [%Message{kind: :narration, witnessed_by_player: true}] =
+               Stories.player_messages(story.id)
+    end
   end
 
   describe "fray_orphaned_weaves/0" do

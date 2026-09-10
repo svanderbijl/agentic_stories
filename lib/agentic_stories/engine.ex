@@ -809,6 +809,64 @@ defmodule AgenticStories.Engine do
   defp image(%{binary: _, content_type: _} = image), do: image
 
   @doc """
+  The player asks to rebuild a character's sheet (or their own) from how
+  they look now. Reloads the row, then reads the record the way a plate
+  does — a coat shrugged off in the beats wins over the woven clothes —
+  writes that look down, and paints. A failed read-back still paints from
+  whatever is stored. Best-effort; a failed compose leaves the old sheet.
+  In-process so the LiveView can show a spinner until it lands.
+  """
+  @spec request_sheet(Story.t(), Character.t() | {:character, integer()} | :player) :: :ok
+  def request_sheet(%Story{} = story, %Character{id: id}) do
+    request_sheet(story, {:character, id})
+  end
+
+  def request_sheet(%Story{} = story, {:character, id}) when is_integer(id) do
+    story = Stories.get_story!(story.id)
+    character = Stories.get_character!(id)
+    beats = Stories.recent_beats(story.id, config(:memory_window))
+    character = adopt_character_looks(character, Narrator.current_looks(story, character, beats))
+    refresh_character_likeness(story, character)
+  end
+
+  def request_sheet(%Story{} = story, :player) do
+    story = Stories.get_story!(story.id)
+    beats = Stories.recent_beats(story.id, config(:memory_window))
+    story = adopt_player_looks(story, Narrator.current_looks(story, :player, beats))
+    refresh_player_likeness(story)
+  end
+
+  defp adopt_character_looks(character, :none), do: character
+
+  defp adopt_character_looks(character, {:ok, appearance}) do
+    if same_looks?(character.appearance, appearance) do
+      character
+    else
+      case Stories.describe_character(character, appearance) do
+        {:ok, updated} ->
+          CharacterAgent.redressed(updated.id, updated.appearance)
+          updated
+
+        {:error, _reason} ->
+          character
+      end
+    end
+  end
+
+  defp adopt_player_looks(story, :none), do: story
+
+  defp adopt_player_looks(story, {:ok, appearance}) do
+    if same_looks?(story.player_appearance || story.protagonist, appearance) do
+      story
+    else
+      case Stories.describe_player(story, appearance) do
+        {:ok, updated} -> updated
+        {:error, _reason} -> story
+      end
+    end
+  end
+
+  @doc """
   The player asks for a picture of where they are. Unlike every other plate,
   this one is not commissioned from a caller who already knows the scene: the
   Narrator reads the story back first and works out who is present, how they

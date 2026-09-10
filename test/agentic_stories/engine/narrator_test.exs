@@ -150,6 +150,74 @@ defmodule AgenticStories.Engine.NarratorTest do
     end
   end
 
+  describe "current_looks/3" do
+    test "reads the record for how one person looks now" do
+      capture_request("dark braid, a red silk dress, the coat gone")
+
+      character = %Character{
+        name: "Maren",
+        appearance: "Wind-burned, dark braid, a coat two sizes too big."
+      }
+
+      beats = [
+        %Message{
+          kind: :act,
+          content: "steps out of the coat and into a red silk dress",
+          character: character
+        }
+      ]
+
+      assert {:ok, "dark braid, a red silk dress, the coat gone"} =
+               Narrator.current_looks(story(), character, beats)
+
+      assert_received {:request, request}
+      assert request.system =~ "how ONE person looks NOW"
+      assert request.system =~ "stored look"
+      assert hd(request.messages).content =~ "Who: Maren"
+      assert hd(request.messages).content =~ "coat two sizes too big"
+      assert hd(request.messages).content =~ "red silk dress"
+    end
+
+    test "the player is the person the record addresses as you" do
+      capture_request("shirtsleeves, salt in his hair")
+
+      told =
+        struct!(story(),
+          protagonist: "Jack, salt in his hair, the keeper's coat still on."
+        )
+
+      assert {:ok, "shirtsleeves, salt in his hair"} =
+               Narrator.current_looks(told, :player, [
+                 %Message{kind: :act, content: "shrugs the coat onto the chair"}
+               ])
+
+      assert_received {:request, request}
+      assert hd(request.messages).content =~ "the player"
+      assert hd(request.messages).content =~ "addresses as \"you\""
+      assert hd(request.messages).content =~ "the keeper's coat still on"
+    end
+
+    test "nothing to read, NOTHING, and failures collapse to :none" do
+      character = %Character{name: "Maren", appearance: "a coat two sizes too big."}
+
+      assert :none = Narrator.current_looks(story(), character, [])
+
+      expect(LLM.Mock, :chat, fn _request -> {:ok, %Response{text: "NOTHING"}} end)
+
+      assert :none =
+               Narrator.current_looks(story(), character, [
+                 %Message{kind: :narration, content: "The tide pulls back."}
+               ])
+
+      expect(LLM.Mock, :chat, fn _request -> {:error, :timeout} end)
+
+      assert :none =
+               Narrator.current_looks(story(), character, [
+                 %Message{kind: :narration, content: "The tide pulls back."}
+               ])
+    end
+  end
+
   describe "implied_move/3" do
     defp locations do
       [

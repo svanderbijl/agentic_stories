@@ -9,10 +9,19 @@ defmodule AgenticStories.LLM.JSON do
 
   @spec decode_object(String.t()) :: {:ok, map()} | :error
   def decode_object(text) when is_binary(text) do
-    with {:ok, slice} <- outer_object(text),
-         {:ok, %{} = map} <- Jason.decode(slice) do
-      {:ok, map}
-    else
+    with {:ok, slice} <- outer_object(text) do
+      case Jason.decode(slice) do
+        {:ok, %{} = map} -> {:ok, map}
+        _ -> decode_repaired(slice)
+      end
+    end
+  end
+
+  # Models often leave a trailing comma before } or ]; one pass is enough
+  # for typical nested objects. Anything still invalid stays :error.
+  defp decode_repaired(slice) do
+    case slice |> String.replace(~r/,(\s*[}\]])/, "\\1") |> Jason.decode() do
+      {:ok, %{} = map} -> {:ok, map}
       _ -> :error
     end
   end

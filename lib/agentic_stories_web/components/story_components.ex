@@ -301,6 +301,8 @@ defmodule AgenticStoriesWeb.StoryComponents do
   attr :thinking, :boolean, default: false
   attr :seekable, :boolean, default: false
   attr :id_prefix, :string, default: "cast"
+  attr :refreshable, :boolean, default: false
+  attr :refreshing, :boolean, default: false
 
   def cast_card(assigns) do
     ~H"""
@@ -352,6 +354,13 @@ defmodule AgenticStoriesWeb.StoryComponents do
       >
         {@character.voice}
       </p>
+      <.refresh_sheet_link
+        :if={@refreshable}
+        id={"#{@id_prefix}-refresh-#{@character.id}"}
+        target_id={@character.id}
+        title={"Redraw #{@character.name}'s character sheet from how they look now"}
+        refreshing={@refreshing}
+      />
     </div>
     """
   end
@@ -425,6 +434,8 @@ defmodule AgenticStoriesWeb.StoryComponents do
   """
   attr :story, Story, required: true
   attr :id_prefix, :string, default: "player"
+  attr :refreshable, :boolean, default: false
+  attr :refreshing, :boolean, default: false
 
   def player_card(assigns) do
     ~H"""
@@ -456,6 +467,13 @@ defmodule AgenticStoriesWeb.StoryComponents do
       >
         {@story.protagonist}
       </p>
+      <.refresh_sheet_link
+        :if={@refreshable}
+        id={"#{@id_prefix}-refresh"}
+        target_id="player"
+        title="Redraw your character sheet from how you look now"
+        refreshing={@refreshing}
+      />
     </div>
     """
   end
@@ -493,6 +511,8 @@ defmodule AgenticStoriesWeb.StoryComponents do
   attr :board, :any, required: true
   attr :story, Story, required: true
   attr :characters, :list, required: true
+  attr :refreshable, :boolean, default: false
+  attr :refreshing, :boolean, default: false
 
   def board_modal(assigns) do
     assigns =
@@ -527,15 +547,43 @@ defmodule AgenticStoriesWeb.StoryComponents do
               {@subject.name}
             </h2>
           </div>
-          <button
-            type="button"
-            id="board-modal-close"
-            phx-click="hide_board"
-            aria-label="Close character sheet"
-            class="grid size-8 cursor-pointer place-items-center rounded-full text-ink-faint transition hover:bg-ember-soft hover:text-ink"
-          >
-            <.icon name="hero-x-mark" class="size-5" />
-          </button>
+          <div class="flex shrink-0 items-center gap-1">
+            <button
+              :if={@refreshable}
+              type="button"
+              id="board-modal-refresh"
+              phx-click="refresh_board"
+              phx-value-id={@subject.id}
+              disabled={@refreshing}
+              title={
+                if(@subject.id == "player",
+                  do: "Redraw your sheet from how you look now",
+                  else: "Redraw #{@subject.name}'s sheet from how they look now"
+                )
+              }
+              class={[
+                "flex cursor-pointer items-center gap-1.5 rounded-full border border-edge px-2.5 py-1",
+                "font-mono text-[10px] tracking-wide text-ink-faint transition",
+                "hover:border-ember/50 hover:text-ink",
+                "disabled:cursor-wait disabled:opacity-60"
+              ]}
+            >
+              <.icon
+                name="hero-arrow-path-micro"
+                class={["size-3.5", @refreshing && "animate-spin"]}
+              />
+              {if @refreshing, do: "Refreshing…", else: "Refresh"}
+            </button>
+            <button
+              type="button"
+              id="board-modal-close"
+              phx-click="hide_board"
+              aria-label="Close character sheet"
+              class="grid size-8 cursor-pointer place-items-center rounded-full text-ink-faint transition hover:bg-ember-soft hover:text-ink"
+            >
+              <.icon name="hero-x-mark" class="size-5" />
+            </button>
+          </div>
         </div>
         <div class="min-h-0 flex-1 overflow-auto bg-paper p-2 sm:p-4">
           <img
@@ -550,8 +598,34 @@ defmodule AgenticStoriesWeb.StoryComponents do
     """
   end
 
+  attr :id, :string, required: true
+  attr :target_id, :any, required: true
+  attr :title, :string, required: true
+  attr :refreshing, :boolean, default: false
+
+  defp refresh_sheet_link(assigns) do
+    ~H"""
+    <button
+      type="button"
+      id={@id}
+      phx-click="refresh_board"
+      phx-value-id={@target_id}
+      disabled={@refreshing}
+      title={@title}
+      class={[
+        "mt-3 cursor-pointer font-mono text-[9px] tracking-[0.18em] text-ink-faint uppercase transition-colors",
+        "hover:text-ember",
+        "disabled:cursor-wait disabled:opacity-60"
+      ]}
+    >
+      {if @refreshing, do: "Refreshing…", else: "refresh sheet"}
+    </button>
+    """
+  end
+
   defp board_subject(:player, %Story{} = story, _characters) do
     %{
+      id: "player",
       name: "You",
       src: ~p"/player-boards/#{story.id}?v=#{DateTime.to_unix(story.updated_at)}",
       alt: "Your character sheet"
@@ -562,6 +636,7 @@ defmodule AgenticStoriesWeb.StoryComponents do
     case Enum.find(characters, &(&1.id == id)) do
       %Character{board_type: type} = character when is_binary(type) ->
         %{
+          id: character.id,
           name: character.name,
           src: ~p"/boards/#{character.id}?v=#{DateTime.to_unix(character.updated_at)}",
           alt: "#{character.name}'s character sheet"

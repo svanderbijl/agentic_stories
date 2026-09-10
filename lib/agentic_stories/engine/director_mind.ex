@@ -31,7 +31,10 @@ defmodule AgenticStories.Engine.DirectorMind do
       model: LLM.director_model(),
       system: system_prompt(story, characters, locations),
       messages: [%{role: :user, content: tick_prompt(story, locations, beats)}],
-      max_tokens: 2048
+      # same thinking-vs-JSON budget as the Weaver: the direction itself is
+      # small, the thought that produces it is not. 2k truncated mid-object
+      # and collapsed to :wait.
+      max_tokens: 8192
     }
 
     with {:ok, response} <- LLM.chat(request, story_id: story.id, purpose: :direct),
@@ -177,6 +180,10 @@ defmodule AgenticStories.Engine.DirectorMind do
 
   defp protagonist_line(%Story{protagonist: protagonist}),
     do: "The player, whom the story is told to: #{protagonist}\n"
+
+  defp cast([], _locations) do
+    "- none. This is a solo story: there is no cast. Do not introduce named people who would act as characters.\n"
+  end
 
   defp cast(characters, locations) do
     names = Map.new(locations, &{&1.id, &1.name})

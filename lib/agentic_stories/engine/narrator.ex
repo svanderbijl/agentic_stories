@@ -239,6 +239,83 @@ defmodule AgenticStories.Engine.Narrator do
   end
 
   @doc """
+  Reads the record and describes how ONE person looks NOW — build, face,
+  hair, clothes, wounds — as the story has left them. The last stored look
+  is a starting point; a coat shrugged off in the beats still wins.
+
+  This is what a character-sheet refresh asks for, so it does not have to
+  wait for the Director to `looks` them or for a plate to notice. Returns
+  `:none` when there is nothing to read or the read-back fails; the stored
+  look then stands.
+  """
+  @spec current_looks(Story.t(), Character.t() | :player, [Message.t()]) ::
+          {:ok, String.t()} | :none
+  def current_looks(_story, _who, []), do: :none
+
+  def current_looks(%Story{} = story, who, beats) do
+    {label, stored} = looks_subject(story, who)
+
+    request = %Request{
+      model: LLM.character_model(),
+      system: """
+      You read the record of a story and describe how ONE person looks NOW.
+
+      The last stored look is how the world last wrote them down. Clothing
+      put on, taken off, torn, soaked, or wounded in the record since then
+      still wins. Do not invent a new face, build, or dress the record never
+      showed.
+
+      Write in the story's language — the language of the beats you are shown.
+      Reply with one or two concrete sentences an illustrator could paint
+      from: build, face, hair, clothes, wounds. Nothing else — no name in
+      front, no quotation marks, no labels. If the record has not changed
+      how they look, repeat the stored look. If you cannot tell, reply with
+      the single word NOTHING.
+      """,
+      messages: [
+        %{
+          role: :user,
+          content: """
+          Who: #{label}
+          Last stored look: #{stored || "unknown"}
+
+          The record so far:
+
+          #{CharacterMind.transcript(beats)}
+          """
+        }
+      ],
+      max_tokens: 256
+    }
+
+    case LLM.chat(request, story_id: story.id, purpose: :looks) do
+      {:ok, %{text: text}} -> read_looks(text)
+      {:error, _reason} -> :none
+    end
+  rescue
+    exception ->
+      Logger.warning("current looks failed: #{Exception.message(exception)}")
+      :none
+  end
+
+  defp looks_subject(_story, %Character{} = character) do
+    {character.name, character.appearance || character.persona}
+  end
+
+  defp looks_subject(%Story{} = story, :player) do
+    {"the player, whom the story addresses as \"you\"",
+     story.player_appearance || story.protagonist}
+  end
+
+  defp read_looks(text) do
+    case text |> to_string() |> String.trim() |> String.trim("\"") do
+      "" -> :none
+      "NOTHING" <> _rest -> :none
+      looks -> {:ok, looks}
+    end
+  end
+
+  @doc """
   Reads a player's beat for movement they narrated themselves ("I head for
   the porch") and resolves it to one of the story's places — so the world
   moves when the fiction says it does. Returns the location or `:none`.

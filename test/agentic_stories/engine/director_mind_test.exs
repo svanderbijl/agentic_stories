@@ -71,6 +71,7 @@ defmodule AgenticStories.Engine.DirectorMindTest do
 
       assert_received {:request, request}
       assert request.model == LLM.director_model()
+      assert request.max_tokens == 8192
       assert request.system =~ "Director"
       assert request.system =~ "She has already been through the door."
       assert request.system =~ "Looks: Wind-burned, dark braid"
@@ -87,6 +88,21 @@ defmodule AgenticStories.Engine.DirectorMindTest do
       assert content =~ "The player is at: The Lamp Room."
       # the newest beat is a character's, so nothing is unanswered
       refute content =~ "gone unanswered"
+    end
+
+    test "a solo story is told there is no cast to invent" do
+      test_pid = self()
+
+      expect(LLM.Mock, :chat, fn %Request{} = request ->
+        send(test_pid, {:request, request})
+        {:ok, %Response{text: ~s({"do": "wait"})}}
+      end)
+
+      assert :wait = DirectorMind.decide(story(), [], locations(), [])
+
+      assert_received {:request, request}
+      assert request.system =~ "solo story"
+      assert request.system =~ "Do not introduce named people"
     end
 
     test "flags the player's unanswered beats" do

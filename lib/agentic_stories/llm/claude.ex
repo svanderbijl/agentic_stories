@@ -32,7 +32,7 @@ defmodule AgenticStories.LLM.Claude do
     [
       base_url: Keyword.get(config, :base_url, @default_base_url),
       headers: [{"x-api-key", api_key!(config)}, {"anthropic-version", @api_version}],
-      receive_timeout: 120_000
+      receive_timeout: 300_000
     ]
     |> put_plug(config)
     |> Req.new()

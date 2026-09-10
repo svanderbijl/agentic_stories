@@ -3,6 +3,7 @@ defmodule AgenticStoriesWeb.StoryLiveTest do
   use AgenticStoriesWeb.ConnCase, async: false
 
   import AgenticStories.StoriesFixtures
+  import Mox
   import Phoenix.LiveViewTest
 
   alias AgenticStories.Engine.Presence
@@ -297,6 +298,109 @@ defmodule AgenticStoriesWeb.StoryLiveTest do
 
       assert_redirect(view, "/")
       assert AgenticStories.Stories.list_stories() == []
+    end
+  end
+
+  describe "refreshing a character sheet" do
+    setup :verify_on_exit!
+
+    setup %{conn: conn} do
+      config = Application.fetch_env!(:agentic_stories, AgenticStories.Imagery)
+      on_exit(fn -> Application.put_env(:agentic_stories, AgenticStories.Imagery, config) end)
+
+      Application.put_env(
+        :agentic_stories,
+        AgenticStories.Imagery,
+        Keyword.put(config, :enabled, true)
+      )
+
+      story =
+        story_fixture(%{protagonist: "Jack, who keeps the light and lives alone."})
+
+      character =
+        character_fixture(story, %{
+          appearance: "Wind-burned, dark braid, a coat two sizes too big."
+        })
+
+      {:ok, _} = Stories.put_character_avatar(character, <<255, 216, 255>>, "image/jpeg")
+      {:ok, character} = Stories.put_character_board(character, <<1, 2, 3>>, "image/jpeg")
+      {:ok, story} = Stories.put_player_avatar(story, <<9, 9, 9>>, "image/jpeg")
+      {:ok, story} = Stories.put_player_board(story, <<4, 5, 6>>, "image/jpeg")
+
+      {:ok, view, _html} = live(conn, ~p"/stories/#{story}")
+      %{story: story, character: character, view: view}
+    end
+
+    test "the cast card has a link that rebuilds the sheet from how they look now", ctx do
+      {:ok, _} = Stories.describe_character(ctx.character, "dark braid, a red silk dress")
+
+      expect(AgenticStories.Imagery.Mock, :compose, fn prompt, _references ->
+        assert prompt =~ "dark braid, a red silk dress"
+        refute prompt =~ "coat two sizes too big"
+        {:ok, %{binary: <<8>>, content_type: "image/jpeg"}}
+      end)
+
+      expect(AgenticStories.Imagery.Mock, :compose, fn prompt, _references ->
+        assert prompt =~ "Head and shoulders"
+        {:ok, %{binary: <<7>>, content_type: "image/jpeg"}}
+      end)
+
+      assert has_element?(ctx.view, "#aside-refresh-#{ctx.character.id}", "refresh sheet")
+
+      ctx.view
+      |> element("#aside-refresh-#{ctx.character.id}")
+      |> render_click()
+
+      assert has_element?(ctx.view, "#aside-refresh-#{ctx.character.id}", "Refreshing")
+      render_async(ctx.view)
+
+      refute has_element?(ctx.view, "#aside-refresh-#{ctx.character.id}", "Refreshing")
+      assert {<<8>>, "image/jpeg"} = Stories.get_board(ctx.character.id)
+      assert {<<7>>, "image/jpeg"} = Stories.get_avatar(ctx.character.id)
+    end
+
+    test "the character sheet itself can be refreshed", ctx do
+      expect(AgenticStories.Imagery.Mock, :compose, 2, fn _prompt, _references ->
+        {:ok, %{binary: <<8>>, content_type: "image/jpeg"}}
+      end)
+
+      ctx.view
+      |> element("#aside-board-#{ctx.character.id}")
+      |> render_click()
+
+      assert has_element?(ctx.view, "#board-modal-refresh")
+
+      ctx.view
+      |> element("#board-modal-refresh")
+      |> render_click()
+
+      assert has_element?(ctx.view, "#board-modal-refresh", "Refreshing")
+      render_async(ctx.view)
+
+      assert {<<8>>, "image/jpeg"} = Stories.get_board(ctx.character.id)
+    end
+
+    test "the player's card refreshes their sheet", ctx do
+      {:ok, _} = Stories.describe_player(ctx.story, "shirtsleeves, salt in his hair")
+
+      expect(AgenticStories.Imagery.Mock, :compose, fn prompt, _references ->
+        assert prompt =~ "shirtsleeves, salt in his hair"
+        {:ok, %{binary: <<8>>, content_type: "image/jpeg"}}
+      end)
+
+      expect(AgenticStories.Imagery.Mock, :compose, fn _prompt, _references ->
+        {:ok, %{binary: <<7>>, content_type: "image/jpeg"}}
+      end)
+
+      assert has_element?(ctx.view, "#aside-player-refresh", "refresh sheet")
+
+      ctx.view
+      |> element("#aside-player-refresh")
+      |> render_click()
+
+      render_async(ctx.view)
+
+      assert {<<8>>, "image/jpeg"} = Stories.get_player_board(ctx.story.id)
     end
   end
 

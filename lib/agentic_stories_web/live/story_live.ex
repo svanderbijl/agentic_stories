@@ -34,7 +34,8 @@ defmodule AgenticStoriesWeb.StoryLive do
         recap: nil,
         painting: false,
         can_paint?: Imagery.enabled?(),
-        board: nil
+        board: nil,
+        refreshing_board: nil
       )
       |> stream(:beats, beats)
 
@@ -107,6 +108,17 @@ defmodule AgenticStoriesWeb.StoryLive do
 
   def handle_event("hide_board", _params, socket) do
     {:noreply, assign(socket, board: nil)}
+  end
+
+  def handle_event("refresh_board", %{"id" => "player"}, socket) do
+    {:noreply, start_board_refresh(socket, :player)}
+  end
+
+  def handle_event("refresh_board", %{"id" => id}, socket) do
+    case Integer.parse(id) do
+      {id, ""} -> {:noreply, start_board_refresh(socket, {:character, id})}
+      _ -> {:noreply, socket}
+    end
   end
 
   def handle_event("end_story", _params, socket) do
@@ -189,6 +201,10 @@ defmodule AgenticStoriesWeb.StoryLive do
 
   def handle_async(:recap, _result, socket), do: {:noreply, socket}
 
+  def handle_async(:refresh_board, _result, socket) do
+    {:noreply, assign(socket, refreshing_board: nil)}
+  end
+
   # "Previously…" greets a player who has been away a while.
   defp maybe_start_recap(socket, %Story{status: :live} = story, beats) do
     away_ms =
@@ -205,6 +221,19 @@ defmodule AgenticStoriesWeb.StoryLive do
   end
 
   defp maybe_start_recap(socket, _story, _beats), do: socket
+
+  defp start_board_refresh(
+         %{assigns: %{can_paint?: true, refreshing_board: nil}} = socket,
+         target
+       ) do
+    story = socket.assigns.story
+
+    socket
+    |> assign(refreshing_board: target)
+    |> start_async(:refresh_board, fn -> Engine.request_sheet(story, target) end)
+  end
+
+  defp start_board_refresh(socket, _target), do: socket
 
   defp assign_story(socket, %Story{} = story) do
     assign(socket,
@@ -249,6 +278,7 @@ defmodule AgenticStoriesWeb.StoryLive do
         painting={@painting}
         can_paint?={@can_paint?}
         board={@board}
+        refreshing_board={@refreshing_board}
       />
     </Layouts.app>
     """
@@ -265,6 +295,7 @@ defmodule AgenticStoriesWeb.StoryLive do
   attr :painting, :boolean, default: false
   attr :can_paint?, :boolean, default: false
   attr :board, :any, default: nil
+  attr :refreshing_board, :any, default: nil
 
   defp scene(assigns) do
     ~H"""
@@ -304,7 +335,13 @@ defmodule AgenticStoriesWeb.StoryLive do
                 <.icon name="hero-chevron-down-micro" class="size-3 text-ink-faint" />
               </summary>
               <div class="mt-3 grid gap-2 sm:grid-cols-2">
-                <.player_card :if={player_shown?(@story)} story={@story} id_prefix="mobile-player" />
+                <.player_card
+                  :if={player_shown?(@story)}
+                  story={@story}
+                  id_prefix="mobile-player"
+                  refreshable={@can_paint?}
+                  refreshing={@refreshing_board == :player}
+                />
                 <.cast_card
                   :for={character <- @characters}
                   character={character}
@@ -313,6 +350,8 @@ defmodule AgenticStoriesWeb.StoryLive do
                   max_energy={@max_energy}
                   seekable={@story.status == :live}
                   id_prefix="mobile"
+                  refreshable={@can_paint?}
+                  refreshing={@refreshing_board == {:character, character.id}}
                 />
                 <.location_card
                   :for={location <- @locations}
@@ -453,7 +492,13 @@ defmodule AgenticStoriesWeb.StoryLive do
             <div class="h-px w-full bg-edge/80"></div>
           </div>
           <div class="mt-4 space-y-3">
-            <.player_card :if={player_shown?(@story)} story={@story} id_prefix="aside-player" />
+            <.player_card
+              :if={player_shown?(@story)}
+              story={@story}
+              id_prefix="aside-player"
+              refreshable={@can_paint?}
+              refreshing={@refreshing_board == :player}
+            />
             <.cast_card
               :for={character <- @characters}
               character={character}
@@ -462,6 +507,8 @@ defmodule AgenticStoriesWeb.StoryLive do
               max_energy={@max_energy}
               seekable={@story.status == :live}
               id_prefix="aside"
+              refreshable={@can_paint?}
+              refreshing={@refreshing_board == {:character, character.id}}
             />
           </div>
 
@@ -494,7 +541,14 @@ defmodule AgenticStoriesWeb.StoryLive do
         </div>
       </aside>
 
-      <.board_modal :if={@board} board={@board} story={@story} characters={@characters} />
+      <.board_modal
+        :if={@board}
+        board={@board}
+        story={@story}
+        characters={@characters}
+        refreshable={@can_paint?}
+        refreshing={@refreshing_board == @board}
+      />
     </div>
     """
   end

@@ -53,9 +53,12 @@ defmodule AgenticStories.Engine.WeaverTest do
 
       expect(LLM.Mock, :chat, fn %Request{} = request ->
         assert request.model == LLM.weaver_model()
+        assert request.max_tokens == 32_000
         assert request.system =~ "Weaver"
         assert request.system =~ "If the seed describes how they look, copy that exactly"
         assert request.system =~ "a red dress in the seed is a"
+        assert request.system =~ "Do not pad a named cast"
+        assert request.system =~ "named people vanish"
         assert [%{role: :user, content: content}] = request.messages
         assert content =~ story.seed
 
@@ -82,10 +85,53 @@ defmodule AgenticStories.Engine.WeaverTest do
 
     test "marks the story failed when the blueprint is malformed" do
       story = weaving_story_fixture()
-      expect(LLM.Mock, :chat, fn _request -> {:ok, %Response{text: "not even json"}} end)
+      expect(LLM.Mock, :chat, 2, fn _request -> {:ok, %Response{text: "not even json"}} end)
 
       assert {:error, _reason} = Weaver.weave(story)
       assert %Story{status: :failed} = Stories.get_story!(story.id)
+    end
+
+    test "retries once when the first reply is not a valid blueprint" do
+      story = weaving_story_fixture()
+
+      expect(LLM.Mock, :chat, fn %Request{} = request ->
+        refute Enum.any?(request.messages, &(&1.role == :assistant))
+        {:ok, %Response{text: "not even json"}}
+      end)
+
+      expect(LLM.Mock, :chat, fn %Request{} = request ->
+        assert Enum.any?(request.messages, &(&1.role == :assistant))
+        assert List.last(request.messages).content =~ "not a valid blueprint"
+        {:ok, %Response{text: Jason.encode!(@blueprint)}}
+      end)
+
+      assert {:ok, %Story{status: :live, title: "The Door Below"}} = Weaver.weave(story)
+    end
+
+    test "brings a solo story live with an empty cast" do
+      story = weaving_story_fixture()
+      solo = Map.put(@blueprint, "characters", [])
+
+      expect(LLM.Mock, :chat, fn _request ->
+        {:ok, %Response{text: Jason.encode!(solo)}}
+      end)
+
+      assert {:ok, %Story{status: :live}} = Weaver.weave(story)
+      assert Stories.list_characters(story.id) == []
+    end
+
+    test "keeps the woven cast even when the seed says not to add extras" do
+      story =
+        weaving_story_fixture(%{
+          seed: "Maren and Old Tosk at the light. Not other characters in this story."
+        })
+
+      expect(LLM.Mock, :chat, fn _request ->
+        {:ok, %Response{text: Jason.encode!(@blueprint)}}
+      end)
+
+      assert {:ok, %Story{status: :live}} = Weaver.weave(story)
+      assert Enum.map(Stories.list_characters(story.id), & &1.name) == ["Maren", "Old Tosk"]
     end
   end
 
@@ -298,7 +344,10 @@ defmodule AgenticStories.Engine.WeaverTest do
       assert String.length(Weaver.player_board_prompt(told)) <= 1500
     end
 
-    test "drops malformed characters and rejects an empty cast" do
+    test "drops characters missing a name or persona, and accepts an empty cast" do
+      empty = Map.put(@blueprint, "characters", [])
+      assert {:ok, %{characters: []}} = empty |> Jason.encode!() |> Weaver.parse_blueprint()
+
       broken = Map.put(@blueprint, "characters", [%{"name" => "", "persona" => "x"}, %{}])
       assert :error = broken |> Jason.encode!() |> Weaver.parse_blueprint()
 
@@ -313,8 +362,41 @@ defmodule AgenticStories.Engine.WeaverTest do
           %{"persona" => "nameless"}
         ])
 
-      assert {:ok, %{characters: [%{name: "Maren"}]}} =
+      assert {:ok, %{characters: [%{name: "Maren"}, %{name: "Tosk", appearance: nil}]}} =
                mixed |> Jason.encode!() |> Weaver.parse_blueprint()
+    end
+
+    test "rejects a blueprint that omits the characters field entirely" do
+      assert :error =
+               @blueprint
+               |> Map.delete("characters")
+               |> Jason.encode!()
+               |> Weaver.parse_blueprint()
+    end
+
+    test "accepts a cast keyed by name instead of listed" do
+      keyed =
+        Map.put(@blueprint, "characters", %{
+          "Maren" => %{
+            "persona" => "The keeper's sister.",
+            "appearance" => "Wind-burned, dark braid."
+          }
+        })
+
+      assert {:ok, %{characters: [%{name: "Maren"}]}} =
+               keyed |> Jason.encode!() |> Weaver.parse_blueprint()
+    end
+
+    test "accepts a single character object in place of an array" do
+      single =
+        Map.put(@blueprint, "characters", %{
+          "name" => "Maren",
+          "persona" => "The keeper's sister.",
+          "appearance" => "Wind-burned, dark braid."
+        })
+
+      assert {:ok, %{characters: [%{name: "Maren"}]}} =
+               single |> Jason.encode!() |> Weaver.parse_blueprint()
     end
   end
 end

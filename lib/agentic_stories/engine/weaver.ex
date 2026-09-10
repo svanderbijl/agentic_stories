@@ -16,14 +16,7 @@ defmodule AgenticStories.Engine.Weaver do
 
   @spec weave(Story.t()) :: {:ok, Story.t()} | {:error, term()}
   def weave(%Story{} = story) do
-    request = %Request{
-      model: LLM.weaver_model(),
-      system: system_prompt(),
-      messages: [%{role: :user, content: "Story seed:\n\n" <> story.seed}]
-    }
-
-    with {:ok, response} <- LLM.chat(request, story_id: story.id, purpose: :weave),
-         {:ok, blueprint} <- parse_blueprint(response.text),
+    with {:ok, blueprint} <- blueprint_for(story),
          {:ok, story} <- Stories.complete_weaving(story, blueprint) do
       paint_cast_and_opening(story, blueprint)
       {:ok, story}
@@ -199,12 +192,16 @@ defmodule AgenticStories.Engine.Weaver do
   @doc """
   Validates the model's JSON into an atom-keyed blueprint for
   `Stories.complete_weaving/2`. Lenient about extras, strict about essentials.
+
+  An empty `"characters"` array is a solo story. Omitting the field, or
+  returning only unusable entries, is a malformed weave — appearance is
+  optional, name and persona are not.
   """
   @spec parse_blueprint(String.t()) :: {:ok, map()} | :error
   def parse_blueprint(text) do
     with {:ok, map} <- JSON.decode_object(text),
          true <- Enum.all?(~w(title premise arc tone style opening), &filled?(map[&1])),
-         [_ | _] = characters <- characters(map["characters"]),
+         {:ok, characters} <- characters_field(map["characters"]),
          [_ | _] = locations <- locations(map["locations"]) do
       {:ok,
        %{
@@ -224,24 +221,54 @@ defmodule AgenticStories.Engine.Weaver do
     end
   end
 
-  defp characters(list) when is_list(list) do
-    for %{"name" => name, "persona" => persona, "appearance" => appearance} = attrs <- list,
-        filled?(name) and filled?(persona) and filled?(appearance) do
+  defp characters_field(list) when is_list(list) do
+    parsed = parse_characters(list)
+
+    cond do
+      parsed != [] -> {:ok, parsed}
+      list == [] -> {:ok, []}
+      true -> :error
+    end
+  end
+
+  defp characters_field(map) when is_map(map) do
+    if character_shaped?(map) do
+      characters_field([map])
+    else
+      entries =
+        for {name, attrs} <- map do
+          if is_map(attrs),
+            do: Map.put_new(attrs, "name", to_string(name)),
+            else: %{"name" => to_string(name)}
+        end
+
+      characters_field(entries)
+    end
+  end
+
+  defp characters_field(_), do: :error
+
+  defp character_shaped?(map),
+    do: is_map_key(map, "name") or is_map_key(map, "persona")
+
+  defp parse_characters(list) do
+    for attrs <- list,
+        is_map(attrs),
+        filled?(attrs["name"]),
+        filled?(attrs["persona"]) do
       %{
-        name: name,
-        persona: persona,
+        name: attrs["name"],
+        persona: attrs["persona"],
         voice: attrs["voice"],
         agenda: attrs["agenda"],
         arc: attrs["arc"],
-        appearance: appearance,
+        appearance: optional(attrs["appearance"]),
         entrance: attrs["entrance"],
         location: attrs["location"],
         energy: Engine.config(:initial_energy)
       }
     end
   end
-
-  defp characters(_), do: []
 
   defp locations(list) when is_list(list) do
     for %{"name" => name} = attrs <- list, filled?(name) do
@@ -257,6 +284,87 @@ defmodule AgenticStories.Engine.Weaver do
 
   defp describe_failure({:error, _reason}), do: "the weave came apart mid-thread"
   defp describe_failure(:error), do: "the weave came back malformed"
+
+  defp blueprint_for(story) do
+    request = %Request{
+      model: LLM.weaver_model(),
+      system: system_prompt(),
+      messages: [%{role: :user, content: "Story seed:\n\n" <> story.seed}],
+      # the weaver model thinks by default; those tokens count against this
+      # cap before a single brace of JSON lands. 16k was enough for the
+      # object and not the thought, which is how a weave comes back
+      # malformed — truncated mid-blueprint. Do not disable thinking to
+      # "save" the budget; give it room instead.
+      max_tokens: 32_000
+    }
+
+    case request_blueprint(story, request) do
+      {:ok, _} = ok ->
+        ok
+
+      {:malformed, response} ->
+        Logger.warning(
+          "weaving story #{story.id}: first blueprint malformed (stop=#{inspect(response.stop_reason)}), retrying (#{snippet(response.text)})"
+        )
+
+        case request_blueprint(story, repair_request(request, response.text)) do
+          {:malformed, response} ->
+            Logger.warning(
+              "weaving story #{story.id}: blueprint still malformed (stop=#{inspect(response.stop_reason)}) (#{snippet(response.text)})"
+            )
+
+            :error
+
+          other ->
+            other
+        end
+
+      error ->
+        error
+    end
+  end
+
+  defp request_blueprint(story, request) do
+    case LLM.chat(request, story_id: story.id, purpose: :weave) do
+      {:ok, response} ->
+        case parse_blueprint(response.text) do
+          {:ok, blueprint} -> {:ok, blueprint}
+          :error -> {:malformed, response}
+        end
+
+      error ->
+        error
+    end
+  end
+
+  @repair_prompt """
+  That reply was not a valid blueprint. Reply with exactly one JSON object
+  matching the schema — no code fences, no commentary. title, premise, arc,
+  tone, style, and opening must be non-empty strings. locations must list at
+  least one named place. Cast the people the seed names or implies; do not
+  pad extras, and do not drop them. An empty characters array is only for a
+  seed with nobody else in it. Each character needs at least a name and a
+  persona.
+  """
+
+  defp repair_request(request, previous) do
+    %{
+      request
+      | messages:
+          request.messages ++
+            [
+              %{role: :assistant, content: previous},
+              %{role: :user, content: @repair_prompt}
+            ]
+    }
+  end
+
+  defp snippet(text) do
+    text
+    |> to_string()
+    |> String.replace(~r/\s+/, " ")
+    |> String.slice(0, 240)
+  end
 
   defp system_prompt do
     """
@@ -291,6 +399,7 @@ defmodule AgenticStories.Engine.Weaver do
           "agenda": "what they privately want or hide — one or two sentences the player must NEVER be told directly",
           "arc": "this character's own journey across the story: where they start, what could change them, where they might end — one or two sentences",
           "appearance": "what they look like — build, face, hair, clothes — in one or two concrete sentences an illustrator could paint from. If the seed describes how they look, copy that exactly; do not invent a different face, build, or dress. Invent looks only when the seed is silent about them",
+          "entrance": "which figure in the opening narration this character is, in the second person, e.g. 'You are the woman whose car has just died on the road below the porch'. Required for anyone who appears in the opening; omit for someone the opening does not mention",
           "location": "the name of the location where they are as the story opens"
         }
       ]
@@ -306,10 +415,18 @@ defmodule AgenticStories.Engine.Weaver do
     the opening narration and each entrance agree with what you wrote.
 
     Give the story two to four locations implied by the seed — the world the
-    player can move through. Give it two to four characters, each placed at
-    one of those locations: at least one should be present at the opening
-    scene, but someone elsewhere makes the world feel inhabited — the player
-    only ever sees what happens where they are. Never cast the player as a
+    player can move through. Cast the people the seed names or clearly
+    implies — that is the whole cast. If the seed names one person besides
+    the player, there is one character; if it names three, there are three.
+    Do not pad a named cast with a companion, a shopkeeper, or a stranger
+    "to make the world feel inhabited". "No other characters" means do not
+    add extras, not that the named people vanish. Only when the seed has
+    nobody else in it at all — the player truly alone — may "characters"
+    be an empty array. When the seed implies a populated world without
+    naming anyone, give it two to four people, each placed at one of the
+    locations: at least one should be present at the opening scene, but
+    someone elsewhere makes the world feel inhabited — the player only
+    ever sees what happens where they are. Never cast the player as a
     character — "protagonist" describes them, it does not add them to the
     cast. Honor the seed: keep its language, its ideas, its implied genre,
     and any physical description it gives — a red dress in the seed is a

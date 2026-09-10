@@ -98,7 +98,7 @@ defmodule AgenticStories.LLM.OpenRouter do
     options = [
       base_url: Keyword.get(config, :base_url, @default_base_url),
       auth: {:bearer, api_key!(config)},
-      receive_timeout: 120_000
+      receive_timeout: 300_000
     ]
 
     options =

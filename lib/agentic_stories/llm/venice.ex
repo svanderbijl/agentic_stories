@@ -130,7 +130,9 @@ defmodule AgenticStories.LLM.Venice do
     options = [
       base_url: Keyword.get(config, :base_url, @default_base_url),
       auth: {:bearer, api_key!(config)},
-      receive_timeout: 120_000
+      # reasoning weaves can think for minutes before the JSON; 2 minutes
+      # cut them off mid-thought and the story frayed as "came apart"
+      receive_timeout: 300_000
     ]
 
     options =

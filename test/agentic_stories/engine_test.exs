@@ -925,6 +925,171 @@ defmodule AgenticStories.EngineTest do
     end
   end
 
+  describe "request_sheet/2" do
+    setup do
+      config = Application.fetch_env!(:agentic_stories, AgenticStories.Imagery)
+      on_exit(fn -> Application.put_env(:agentic_stories, AgenticStories.Imagery, config) end)
+
+      Application.put_env(
+        :agentic_stories,
+        AgenticStories.Imagery,
+        Keyword.put(config, :enabled, true)
+      )
+
+      story = story_fixture()
+      Stories.subscribe(story.id)
+      %{story: story}
+    end
+
+    test "rebuilds a character's sheet from how they look now, even if the struct is stale",
+         ctx do
+      character =
+        character_fixture(ctx.story, %{
+          name: "Maren",
+          appearance: "Wind-burned, dark braid, a coat two sizes too big."
+        })
+
+      {:ok, _} = Stories.put_character_avatar(character, <<255, 216, 255>>, "image/jpeg")
+      {:ok, _} = Stories.put_character_board(character, <<1, 2, 3>>, "image/jpeg")
+      assert_receive {:character_updated, %Character{avatar_type: "image/jpeg"}}
+      assert_receive {:character_updated, %Character{board_type: "image/jpeg"}}
+
+      {:ok, _} = Stories.describe_character(character, "dark braid, a red silk dress")
+      assert_receive {:character_updated, %Character{appearance: "dark braid, a red silk dress"}}
+
+      expect(AgenticStories.Imagery.Mock, :compose, fn prompt, references ->
+        assert String.contains?(prompt, "CHARACTER SHEET LAYOUT")
+        assert prompt =~ "dark braid, a red silk dress"
+        refute prompt =~ "coat two sizes too big"
+        assert [%{binary: <<1, 2, 3>>, content_type: "image/jpeg"}] = references
+        {:ok, %{binary: <<8>>, content_type: "image/jpeg"}}
+      end)
+
+      expect(AgenticStories.Imagery.Mock, :compose, fn prompt, references ->
+        assert prompt =~ "Head and shoulders"
+        assert prompt =~ "dark braid, a red silk dress"
+        assert [%{binary: <<8>>, content_type: "image/jpeg"}] = references
+        {:ok, %{binary: <<7>>, content_type: "image/jpeg"}}
+      end)
+
+      assert :ok = Engine.request_sheet(ctx.story, character)
+      assert {<<8>>, "image/jpeg"} = Stories.get_board(character.id)
+      assert {<<7>>, "image/jpeg"} = Stories.get_avatar(character.id)
+    end
+
+    test "rebuilds the player's sheet from how they look now", ctx do
+      {:ok, story} =
+        ctx.story
+        |> Ecto.Changeset.change(
+          protagonist: "Jack, salt in his hair, the keeper's coat still on."
+        )
+        |> AgenticStories.Repo.update()
+
+      {:ok, story} = Stories.put_player_avatar(story, <<1, 2, 3>>, "image/jpeg")
+      {:ok, story} = Stories.put_player_board(story, <<4, 5, 6>>, "image/jpeg")
+      assert_receive {:story_updated, %Story{player_avatar_type: "image/jpeg"}}
+      assert_receive {:story_updated, %Story{player_board_type: "image/jpeg"}}
+
+      {:ok, _} = Stories.describe_player(story, "shirtsleeves, salt in his hair")
+      assert_receive {:story_updated, %Story{player_appearance: "shirtsleeves, salt in his hair"}}
+
+      expect(AgenticStories.Imagery.Mock, :compose, fn prompt, references ->
+        assert String.contains?(prompt, "CHARACTER SHEET LAYOUT")
+        assert prompt =~ "shirtsleeves, salt in his hair"
+        refute prompt =~ "the keeper's coat still on"
+        assert [%{binary: <<4, 5, 6>>, content_type: "image/jpeg"}] = references
+        {:ok, %{binary: <<8>>, content_type: "image/jpeg"}}
+      end)
+
+      expect(AgenticStories.Imagery.Mock, :compose, fn prompt, references ->
+        assert prompt =~ "Head and shoulders"
+        assert [%{binary: <<8>>, content_type: "image/jpeg"}] = references
+        {:ok, %{binary: <<7>>, content_type: "image/jpeg"}}
+      end)
+
+      assert :ok = Engine.request_sheet(story, :player)
+      assert {<<8>>, "image/jpeg"} = Stories.get_player_board(story.id)
+      assert {<<7>>, "image/jpeg"} = Stories.get_player_avatar(story.id)
+    end
+
+    test "reads the record for a changed outfit, not the woven clothes", ctx do
+      character =
+        character_fixture(ctx.story, %{
+          name: "Maren",
+          appearance: "Wind-burned, dark braid, a coat two sizes too big."
+        })
+
+      {:ok, _} = Stories.put_character_avatar(character, <<255, 216, 255>>, "image/jpeg")
+      {:ok, _} = Stories.put_character_board(character, <<1, 2, 3>>, "image/jpeg")
+      assert_receive {:character_updated, %Character{avatar_type: "image/jpeg"}}
+      assert_receive {:character_updated, %Character{board_type: "image/jpeg"}}
+
+      message_fixture(ctx.story, %{
+        kind: :act,
+        content: "steps out of the coat and into a red silk dress",
+        character_id: character.id
+      })
+
+      expect(LLM.Mock, :chat, fn request ->
+        assert request.system =~ "how ONE person looks NOW"
+        assert hd(request.messages).content =~ "coat two sizes too big"
+        assert hd(request.messages).content =~ "red silk dress"
+
+        {:ok, %Response{text: "dark braid, a red silk dress, the coat gone"}}
+      end)
+
+      expect(AgenticStories.Imagery.Mock, :compose, fn prompt, references ->
+        assert String.contains?(prompt, "CHARACTER SHEET LAYOUT")
+        assert prompt =~ "dark braid, a red silk dress, the coat gone"
+        refute prompt =~ "coat two sizes too big"
+        assert [%{binary: <<1, 2, 3>>, content_type: "image/jpeg"}] = references
+        {:ok, %{binary: <<8>>, content_type: "image/jpeg"}}
+      end)
+
+      expect(AgenticStories.Imagery.Mock, :compose, fn prompt, references ->
+        assert prompt =~ "Head and shoulders"
+        assert [%{binary: <<8>>, content_type: "image/jpeg"}] = references
+        {:ok, %{binary: <<7>>, content_type: "image/jpeg"}}
+      end)
+
+      assert :ok = Engine.request_sheet(ctx.story, character)
+
+      assert Stories.get_character!(character.id).appearance ==
+               "dark braid, a red silk dress, the coat gone"
+
+      assert {<<8>>, "image/jpeg"} = Stories.get_board(character.id)
+    end
+
+    test "a failed read-back still paints from the stored look", ctx do
+      character =
+        character_fixture(ctx.story, %{
+          name: "Maren",
+          appearance: "dark braid, a red silk dress"
+        })
+
+      {:ok, _} = Stories.put_character_avatar(character, <<255, 216, 255>>, "image/jpeg")
+      {:ok, _} = Stories.put_character_board(character, <<1, 2, 3>>, "image/jpeg")
+      assert_receive {:character_updated, %Character{board_type: "image/jpeg"}}
+
+      message_fixture(ctx.story, %{kind: :narration, content: "The tide pulls back."})
+
+      expect(LLM.Mock, :chat, fn _request -> {:error, :timeout} end)
+
+      expect(AgenticStories.Imagery.Mock, :compose, fn prompt, _references ->
+        assert prompt =~ "dark braid, a red silk dress"
+        {:ok, %{binary: <<8>>, content_type: "image/jpeg"}}
+      end)
+
+      expect(AgenticStories.Imagery.Mock, :compose, fn _prompt, _references ->
+        {:ok, %{binary: <<7>>, content_type: "image/jpeg"}}
+      end)
+
+      assert :ok = Engine.request_sheet(ctx.story, character)
+      assert Stories.get_character!(character.id).appearance == "dark braid, a red silk dress"
+      assert {<<8>>, "image/jpeg"} = Stories.get_board(character.id)
+    end
+  end
+
   describe "end_story/1 and delete_story/1" do
     test "ending a story closes the book and retires the cast" do
       story = story_fixture()

@@ -37,6 +37,11 @@ defmodule AgenticStories.LLM.JSONTest do
       assert :error = JSON.decode_object(~s({"do": "say", "text": ))
     end
 
+    test "tolerates trailing commas" do
+      assert {:ok, %{"do" => "wait", "characters" => []}} =
+               JSON.decode_object(~s({"do": "wait", "characters": [],}))
+    end
+
     test "returns :error when braces are out of order" do
       assert :error = JSON.decode_object("} nothing here {")
     end
