@@ -3,6 +3,9 @@ defmodule AgenticStories.Stories.Message do
   One beat of a story. `kind` says who and how: the player speaking, a
   character speaking (`:say`) or doing (`:act`), or the narrator (`:narration`).
   Only character messages carry a `character_id`.
+
+  `attempt` marks a player line that reached into someone else. It is not
+  yet true: `attempt_character_ids` are who decide, in their next beat.
   """
 
   use Ecto.Schema
@@ -11,6 +14,8 @@ defmodule AgenticStories.Stories.Message do
   schema "messages" do
     field :kind, Ecto.Enum, values: [:player, :say, :act, :narration, :illustration]
     field :content, :string
+    field :attempt, :boolean, default: false
+    field :attempt_character_ids, {:array, :integer}, default: []
     # Whether the player was present when this beat happened; set at creation
     # and never retroactively. The reading pane shows only witnessed beats.
     field :witnessed_by_player, :boolean, default: true
@@ -31,6 +36,8 @@ defmodule AgenticStories.Stories.Message do
     |> cast(attrs, [
       :kind,
       :content,
+      :attempt,
+      :attempt_character_ids,
       :character_id,
       :location_id,
       :witnessed_by_player,

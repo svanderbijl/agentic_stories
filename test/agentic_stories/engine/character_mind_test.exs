@@ -180,6 +180,40 @@ defmodule AgenticStories.Engine.CharacterMindTest do
       assert %{content: [instruction]} = List.last(request.messages)
       assert instruction.text =~ "talking to YOU, directly"
       assert instruction.text =~ "Waiting is not"
+      assert instruction.text =~ "do not owe"
+    end
+
+    test "a bid has not happened, and the stance rides the instruction, not the system prompt" do
+      maren = character()
+
+      messages = [
+        %Message{
+          id: 1,
+          kind: :player,
+          attempt: true,
+          attempt_character_ids: [maren.id],
+          content: "I take the key.",
+          character: nil
+        }
+      ]
+
+      capture_request("silence")
+
+      assert :wait =
+               CharacterMind.decide(story(), maren, [], messages, locations(),
+                 stances: ["The key stays in my pocket."]
+               )
+
+      assert_received {:request, request}
+      assert request.system =~ "has not happened"
+      refute request.system =~ "The key stays in my pocket."
+
+      assert [beat_message, %{content: [instruction]}] = request.messages
+      assert [%{text: "The player tries: I take the key.\n"}] = beat_message.content
+      assert instruction.text =~ "has NOT happened"
+      assert instruction.text =~ "I take the key."
+      assert instruction.text =~ "The key stays in my pocket."
+      assert instruction.text =~ "narrate their success"
     end
 
     test "alone with the player, every player beat is addressed to you" do
@@ -269,6 +303,58 @@ defmodule AgenticStories.Engine.CharacterMindTest do
       # once anyone has answered, the obligation clears
       refute CharacterMind.directly_addressed?(maren, [named, reply], true)
       refute CharacterMind.directly_addressed?(maren, [], true)
+    end
+
+    test "a bid stays owed until you yourself answer it" do
+      maren = character()
+
+      bid = %Message{
+        id: 1,
+        kind: :player,
+        attempt: true,
+        attempt_character_ids: [maren.id],
+        content: "I take the key.",
+        character_id: nil
+      }
+
+      other = %Message{id: 2, kind: :say, content: "Hm.", character_id: 99}
+      own = %Message{id: 3, kind: :say, content: "No.", character_id: maren.id}
+
+      assert CharacterMind.directly_addressed?(maren, [bid], false)
+      assert CharacterMind.directly_addressed?(maren, [bid, other], false)
+      refute CharacterMind.directly_addressed?(maren, [bid, own], false)
+    end
+  end
+
+  describe "note_stance/4" do
+    test "writes the next sentence and will not restate the earlier ones" do
+      capture_request("  The key stays in my pocket.  ")
+
+      assert {:ok, "The key stays in my pocket."} =
+               CharacterMind.note_stance(
+                 story(),
+                 character(),
+                 ["I already lied about the door."],
+                 "The player tried: I take the key."
+               )
+
+      assert_received {:request, request}
+      assert request.system =~ "private stance"
+      assert [%{role: :user, content: content}] = request.messages
+      assert content =~ "I already lied about the door."
+      assert content =~ "do not restate"
+      assert content =~ "I take the key."
+    end
+
+    test "NOTHING, blank, and errors pin nothing" do
+      expect(LLM.Mock, :chat, fn _request -> {:ok, %Response{text: "NOTHING"}} end)
+      assert :none = CharacterMind.note_stance(story(), character(), [], "She waits.")
+
+      expect(LLM.Mock, :chat, fn _request -> {:ok, %Response{text: "  "}} end)
+      assert :none = CharacterMind.note_stance(story(), character(), [], "She waits.")
+
+      expect(LLM.Mock, :chat, fn _request -> {:error, :timeout} end)
+      assert :none = CharacterMind.note_stance(story(), character(), [], "She waits.")
     end
   end
 

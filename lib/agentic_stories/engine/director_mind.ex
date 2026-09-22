@@ -98,10 +98,17 @@ defmodule AgenticStories.Engine.DirectorMind do
   defp place(%Message{location_id: nil}, _names), do: "[everywhere]"
   defp place(%Message{location_id: id}, names), do: "[#{Map.get(names, id, "?")}]"
 
+  defp line(%Message{kind: :player, attempt: true, content: content}),
+    do: "The player tries: #{content}"
+
   defp line(%Message{kind: :player, content: content}), do: "The player: #{content}"
   defp line(%Message{kind: :narration, content: content}), do: "Narrator: #{content}"
   defp line(%Message{kind: :illustration, content: content}), do: "(illustration: #{content})"
   defp line(%Message{kind: :say} = message), do: "#{speaker(message)}: #{message.content}"
+
+  defp line(%Message{kind: :act, attempt: true, character_id: nil, content: content}),
+    do: "* The player tries: #{content}"
+
   defp line(%Message{kind: :act} = message), do: "* #{speaker(message)} #{message.content}"
   # a future message kind must degrade, never blind the Director
   defp line(%Message{content: content}), do: "(#{content})"
@@ -150,6 +157,8 @@ defmodule AgenticStories.Engine.DirectorMind do
       motion, questions without answers — is a scene to push: nudge someone
       toward the next step of THEIR story.
     - "reveal" a place only when the story has knocked on its door.
+    - A beat marked "tries" has not happened. Do not narrate it as fact, and
+      do not move the world to make it succeed. The character it names decides.
     - The record must never disagree with where people actually stand. When a
       character has wandered off and the story pulls them back — the player is
       looking for them, a scene needs them — "move" them there; never merely

@@ -9,7 +9,7 @@ defmodule AgenticStories.Engine do
 
   require Logger
 
-  alias AgenticStories.Engine.{CharacterAgent, DirectorAgent, Narrator, Presence, Weaver}
+  alias AgenticStories.Engine.{Agency, CharacterAgent, DirectorAgent, Narrator, Presence, Weaver}
   alias AgenticStories.Imagery
   alias AgenticStories.Stories
   alias AgenticStories.Stories.{Character, Location, Story}
@@ -65,26 +65,61 @@ defmodule AgenticStories.Engine do
   end
 
   @doc """
-  Records a player message where the player stands and energizes the cast:
-  characters in the same place get the full charge, everyone else an ambient
-  trickle — enough to occasionally live their own lives off-screen. Also
-  revives retired agents first — a returning player brings the cast back.
+  Records a player message where the player stands and energizes the cast.
+
+  A line that reaches into someone else is stored as an attempt, not as a
+  fact — that someone decides the outcome. Whoever the line is about gets
+  the full charge; everyone else in the room gets a single beat, and
+  everyone elsewhere an ambient trickle. Also revives retired agents first.
   """
   @spec player_message(Story.t(), String.t()) ::
           {:ok, Stories.Message.t()} | {:error, Ecto.Changeset.t()}
   def player_message(%Story{} = story, content) do
     {kind, content} = parse_player_input(content)
     summon_addressed(story, content)
-    attrs = %{kind: kind, content: content, location_id: story.player_location_id}
+
+    characters = Stories.list_characters(story.id)
+    present = Enum.filter(characters, &co_located?(&1, story))
+    {focus, mode} = Agency.focus(content, present)
+
+    attrs = %{
+      kind: kind,
+      content: content,
+      location_id: story.player_location_id,
+      attempt: mode == :bid,
+      attempt_character_ids: if(mode == :bid, do: focus, else: [])
+    }
 
     with {:ok, message} <- Stories.create_message(story, attrs) do
       # the sentence has landed; the floor is the cast's again
       Presence.stopped_typing(story.id)
       ensure_running(story)
-      energize_cast(story)
+      fund_player_line(story, characters, focus)
       follow_narrated_move(story, content)
       {:ok, message}
     end
+  end
+
+  # The addressee — or the bid's target, or the only person here — can
+  # actually respond. The rest of the room gets one beat, not three, so a
+  # group doesn't answer in chorus. Elsewhere stays a trickle.
+  defp fund_player_line(%Story{} = story, characters, focus) do
+    for character <- characters do
+      here? = co_located?(character, story)
+
+      amount =
+        cond do
+          character.id in focus -> config(:player_energy)
+          here? -> config(:tick_cost)
+          true -> config(:ambient_energy)
+        end
+
+      source = if here?, do: :player, else: :ambient
+      CharacterAgent.energize(character.id, amount, source)
+    end
+
+    DirectorAgent.energize(story.id, config(:player_energy))
+    :ok
   end
 
   # "You head for the porch…" must actually take the player to the porch:

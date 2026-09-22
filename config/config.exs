@@ -60,8 +60,10 @@ config :agentic_stories, AgenticStories.Imagery.Venice,
 # it. A speaking character passes chatter_energy to ONE other cast member (the
 # torch). Invariant: chatter_energy < tick_cost, so every tick strictly drains
 # the cast and scenes provably decay to silence at any cast size. A player
-# message funds ~three beats per character (player_energy / tick_cost);
-# initial_energy funds exactly one reaction to the opening scene. Agents
+# message funds ~three beats for whoever it is about (named, alone in the
+# room, or the target of a bid). Everyone else present gets one beat
+# (tick_cost); elsewhere, ambient_energy trickles one. initial_energy funds
+# exactly one reaction to the opening scene. Agents
 # retire idle_timeout_ms after the last player message, energy or not.
 config :agentic_stories, AgenticStories.Engine,
   start_agents: true,

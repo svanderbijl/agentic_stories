@@ -74,6 +74,33 @@ defmodule AgenticStoriesWeb.StoryLiveTest do
       refute ctx.html =~ "finally tells it"
     end
 
+    test "a private stance is never rendered", %{conn: conn} do
+      story = story_fixture()
+      character = character_fixture(story)
+      assert {:ok, _} = Stories.append_character_stance(character, "The key stays in my pocket.")
+
+      {:ok, _view, html} = live(conn, ~p"/stories/#{story}")
+      refute html =~ "key stays in my pocket"
+      refute html =~ "lied about it"
+    end
+
+    test "a bid renders as an attempt, not as something that already happened", ctx do
+      ctx.view
+      |> form("#composer-form", %{"content" => "I take the key from Maren's pocket."})
+      |> render_submit()
+
+      :sys.get_state(ctx.view.pid)
+      html = render(ctx.view)
+
+      assert html =~ "You try"
+      assert html =~ "beat--attempt"
+      # the apostrophe is escaped in the markup
+      assert html =~ "I take the key from Maren"
+
+      assert [%{attempt: true}] =
+               ctx.story.id |> Stories.list_messages() |> Enum.filter(&(&1.kind == :player))
+    end
+
     test "clicking a portrait opens the character sheet", ctx do
       {:ok, _} = Stories.put_character_avatar(ctx.character, <<255, 216, 255>>, "image/jpeg")
       {:ok, character} = Stories.put_character_board(ctx.character, <<1, 2, 3>>, "image/jpeg")

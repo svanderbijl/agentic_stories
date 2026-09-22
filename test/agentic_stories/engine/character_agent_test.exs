@@ -428,6 +428,81 @@ defmodule AgenticStories.Engine.CharacterAgentTest do
     assert_receive {:character_thinking, ^character_id, false}
   end
 
+  test "resolving a bid pins what they refused", ctx do
+    {:ok, _} =
+      Stories.create_message(ctx.story, %{
+        kind: :player,
+        content: "I take the key from your pocket.",
+        attempt: true,
+        attempt_character_ids: [ctx.character.id]
+      })
+
+    expect(LLM.Mock, :chat, 2, fn request ->
+      cond do
+        request.system =~ "private stance" ->
+          {:ok, %Response{text: "The key stays in my pocket."}}
+
+        true ->
+          {:ok, %Response{text: ~s(She closes her hand over it. "No.")}}
+      end
+    end)
+
+    pid = start_agent(ctx.story, ctx.character)
+    send(pid, :tick)
+
+    assert_receive {:message_created, %Message{kind: :say}}, 1_000
+    # the beat is broadcast before the stance call returns
+    :sys.get_state(pid)
+
+    assert [%{content: "The key stays in my pocket."}] = Stories.list_stances(ctx.character)
+  end
+
+  test "ignoring a bid pins nothing, and the answer is still owed", ctx do
+    {:ok, _} =
+      Stories.create_message(ctx.story, %{
+        kind: :player,
+        content: "I take the key.",
+        attempt: true,
+        attempt_character_ids: [ctx.character.id]
+      })
+
+    expect(LLM.Mock, :chat, fn _request -> {:ok, %Response{text: "silence"}} end)
+
+    pid = start_agent(ctx.story, ctx.character)
+    send(pid, :tick)
+
+    %{tick_timer: timer} = :sys.get_state(pid)
+    assert Process.read_timer(timer) < 15_000
+    assert Stories.list_stances(ctx.character) == []
+  end
+
+  test "a beat away from the player pins a private fact", ctx do
+    lamp = location_fixture(ctx.story, %{name: "The Lamp Room"})
+    shore = location_fixture(ctx.story, %{name: "The Shore"})
+    {:ok, story} = Stories.move_player(ctx.story, shore.id)
+    {:ok, character} = Stories.relocate_character(ctx.character, lamp.id)
+
+    expect(LLM.Mock, :chat, 2, fn request ->
+      cond do
+        request.system =~ "private stance" ->
+          {:ok, %Response{text: "The letter is under the third porch board."}}
+
+        true ->
+          {:ok, %Response{text: "She slides the letter under a loose board."}}
+      end
+    end)
+
+    pid = start_agent(story, character)
+    send(pid, :tick)
+
+    assert_receive {:message_created, %Message{kind: :act}}, 1_000
+    # the beat is broadcast before the stance call returns
+    :sys.get_state(pid)
+
+    assert [%{content: "The letter is under the third porch board."}] =
+             Stories.list_stances(character)
+  end
+
   test "agents register by character id", ctx do
     pid = start_agent(ctx.story, ctx.character)
     assert CharacterAgent.whereis(ctx.character.id) == pid

@@ -16,6 +16,13 @@ defmodule AgenticStoriesWeb.ReaderControllerTest do
 
     message_fixture(story, %{kind: :player, content: "Maren, look."})
 
+    message_fixture(story, %{
+      kind: :player,
+      content: "I take the key from your pocket.",
+      attempt: true,
+      attempt_character_ids: [character.id]
+    })
+
     html = conn |> get(~p"/stories/#{story}/read") |> html_response(200)
 
     assert html =~ story.title
@@ -23,6 +30,8 @@ defmodule AgenticStoriesWeb.ReaderControllerTest do
     assert html =~ "The tide pulls back."
     assert html =~ "You should not be out here."
     assert html =~ "Maren, look."
+    assert html =~ "I take the key from your pocket."
+    assert html =~ "You try"
     assert html =~ "The end"
     # the reader page never leaks unwitnessed material or agendas
     refute html =~ "lied about it"

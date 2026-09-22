@@ -152,6 +152,19 @@ defmodule AgenticStories.StoriesTest do
     end
   end
 
+  describe "stances" do
+    test "append and list, oldest first, and a later sentence does not rewrite the first" do
+      story = story_fixture()
+      character = character_fixture(story)
+
+      assert {:ok, _} = Stories.append_character_stance(character, "The key stays mine.")
+      assert {:ok, _} = Stories.append_character_stance(character, "  I hid the letter.  ")
+
+      assert ["The key stays mine.", "I hid the letter."] =
+               character |> Stories.list_stances() |> Enum.map(& &1.content)
+    end
+  end
+
   describe "messages" do
     test "create_message/2 stores, preloads the character, and broadcasts" do
       story = story_fixture()

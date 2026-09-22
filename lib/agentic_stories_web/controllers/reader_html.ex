@@ -61,6 +61,16 @@ defmodule AgenticStoriesWeb.ReaderHTML do
     """
   end
 
+  defp passage(%{message: %Message{kind: kind, attempt: true, character_id: nil}} = assigns)
+       when kind in [:player, :act] do
+    ~H"""
+    <p
+      class="font-serif text-[1.0625rem] leading-[1.9] whitespace-pre-wrap text-ink italic"
+      phx-no-format
+    >{@message.content} <span class="font-mono text-[10px] tracking-[0.2em] text-ember/80 uppercase not-italic">— You try</span></p>
+    """
+  end
+
   defp passage(%{message: %Message{kind: kind}} = assigns) when kind in [:say, :player] do
     ~H"""
     <p class="font-serif text-[1.0625rem] leading-[1.9] whitespace-pre-wrap text-ink" phx-no-format>“{@message.content}” <span class="font-mono text-[10px] tracking-[0.2em] text-ink-faint uppercase">— {reader_speaker(@message)}</span></p>

@@ -44,6 +44,23 @@ defmodule AgenticStories.Engine.DirectorMindTest do
     ]
   end
 
+  describe "transcript/2" do
+    test "a bid is marked as not having happened" do
+      beats = [
+        %Message{
+          kind: :player,
+          attempt: true,
+          content: "I take the key.",
+          character: nil,
+          location_id: 11
+        }
+      ]
+
+      assert DirectorMind.transcript(beats, locations()) =~
+               "[The Lamp Room] The player tries: I take the key."
+    end
+  end
+
   describe "decide/4" do
     # decide rescues everything, so assertions must not live inside the mock
     # (a failed assert would be swallowed into :wait). Capture, then assert.
@@ -80,6 +97,7 @@ defmodule AgenticStories.Engine.DirectorMindTest do
       assert request.system =~ "looking into the"
       assert request.system =~ ~s("do": "looks")
       assert request.system =~ "Never merely narrate a new appearance"
+      assert request.system =~ "has not happened"
       assert request.system =~ "The Shore: Wet shingle."
       assert request.system =~ "Jack, who keeps the light"
       assert [%{role: :user, content: content}] = request.messages

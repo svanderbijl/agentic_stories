@@ -126,8 +126,8 @@ defmodule AgenticStoriesWeb.StoryComponents do
   One beat of the story, typeset by kind: narration as book prose, a spoken
   beat as prose under a small-caps name (the quotation marks are the
   character's own), silent beats as stage directions,
-  and the player's words set off by an ember rule. Every beat carries a
-  faint timestamp in its meta row.
+  and the player's words set off by an ember rule. A bid is labeled as a
+  try — it has not happened yet. Every beat carries a faint timestamp.
   """
   attr :message, Message, required: true
 
@@ -154,6 +154,22 @@ defmodule AgenticStoriesWeb.StoryComponents do
         <p class="font-mono text-[10px] tracking-[0.25em] text-ember/90 uppercase">
           {speaker(@message)}
         </p>
+        <.beat_time message={@message} />
+      </div>
+      <p
+        class="mt-1 font-serif text-[1.0625rem] leading-[1.8] whitespace-pre-wrap text-ink"
+        phx-no-format
+      >{@message.content}</p>
+    </div>
+    """
+  end
+
+  def beat(%{message: %Message{kind: kind, attempt: true, character_id: nil}} = assigns)
+      when kind in [:player, :act] do
+    ~H"""
+    <div class="beat beat--attempt border-l-2 border-dashed border-ember/50 pl-4">
+      <div class="flex items-baseline justify-between gap-3">
+        <p class="font-mono text-[10px] tracking-[0.25em] text-ember/80 uppercase">You try</p>
         <.beat_time message={@message} />
       </div>
       <p

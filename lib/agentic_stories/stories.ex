@@ -16,6 +16,7 @@ defmodule AgenticStories.Stories do
   alias AgenticStories.Stories.{
     Character,
     CharacterMemory,
+    CharacterStance,
     Location,
     Message,
     MessageWitness,
@@ -477,6 +478,25 @@ defmodule AgenticStories.Stories do
       from m in CharacterMemory,
         where: m.character_id == ^character.id,
         order_by: [asc: m.id]
+    )
+  end
+
+  @doc """
+  Appends one immutable stance sentence. Not broadcast: a stance is private
+  policy, like an agenda, and nothing in the UI is allowed to read it.
+  """
+  def append_character_stance(%Character{} = character, content) when is_binary(content) do
+    %CharacterStance{character_id: character.id}
+    |> CharacterStance.changeset(%{content: content})
+    |> Repo.insert()
+  end
+
+  @doc "A character's stance sentences, oldest first."
+  def list_stances(%Character{} = character) do
+    Repo.all(
+      from s in CharacterStance,
+        where: s.character_id == ^character.id,
+        order_by: [asc: s.id]
     )
   end
 

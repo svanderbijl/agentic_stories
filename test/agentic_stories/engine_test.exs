@@ -95,6 +95,59 @@ defmodule AgenticStories.EngineTest do
       assert {:ok, %Message{kind: :player, content: "Hello * there"}} =
                Engine.player_message(story, "Hello * there")
     end
+
+    test "a deed that imposes on someone is a bid, and only they are fully charged" do
+      story = story_fixture()
+      maren = character_fixture(story, %{name: "Maren", energy: 0})
+      brahm = character_fixture(story, %{name: "Brahm", energy: 0})
+
+      maren_pid =
+        start_supervised!({CharacterAgent, character: maren, story: story}, id: :maren)
+
+      brahm_pid =
+        start_supervised!({CharacterAgent, character: brahm, story: story}, id: :brahm)
+
+      assert {:ok, %Message{kind: :act, attempt: true, content: "I kiss Maren"} = message} =
+               Engine.player_message(story, "*I kiss Maren*")
+
+      assert message.attempt_character_ids == [maren.id]
+      assert %{energy: 6} = :sys.get_state(maren_pid)
+      assert %{energy: 2} = :sys.get_state(brahm_pid)
+    end
+
+    test "an unaddressed line in a group funds one beat each, not a chorus" do
+      story = story_fixture()
+      maren = character_fixture(story, %{name: "Maren", energy: 0})
+      brahm = character_fixture(story, %{name: "Brahm", energy: 0})
+
+      maren_pid =
+        start_supervised!({CharacterAgent, character: maren, story: story}, id: :maren)
+
+      brahm_pid =
+        start_supervised!({CharacterAgent, character: brahm, story: story}, id: :brahm)
+
+      assert {:ok, %Message{attempt: false}} = Engine.player_message(story, "Hello?")
+      assert %{energy: 2} = :sys.get_state(maren_pid)
+      assert %{energy: 2} = :sys.get_state(brahm_pid)
+    end
+
+    test "naming someone in a group still gives them the full charge" do
+      story = story_fixture()
+      maren = character_fixture(story, %{name: "Maren", energy: 0})
+      brahm = character_fixture(story, %{name: "Brahm", energy: 0})
+
+      maren_pid =
+        start_supervised!({CharacterAgent, character: maren, story: story}, id: :maren)
+
+      brahm_pid =
+        start_supervised!({CharacterAgent, character: brahm, story: story}, id: :brahm)
+
+      assert {:ok, %Message{attempt: false}} =
+               Engine.player_message(story, "Maren, are you awake?")
+
+      assert %{energy: 6} = :sys.get_state(maren_pid)
+      assert %{energy: 2} = :sys.get_state(brahm_pid)
+    end
   end
 
   describe "character_message/4" do

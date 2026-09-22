@@ -231,10 +231,13 @@ defmodule AgenticStories.Engine.CharacterAgent do
 
     Stories.signal_thinking(story.id, character.id, true)
 
+    stances = character |> Stories.list_stances() |> Enum.map(& &1.content)
+
     decision =
       CharacterMind.decide(story, character, memories, messages, locations,
         alone_with_player?: alone?,
-        cast: cast
+        cast: cast,
+        stances: stances
       )
 
     Stories.signal_thinking(story.id, character.id, false)
@@ -251,7 +254,7 @@ defmodule AgenticStories.Engine.CharacterAgent do
           attempt(state, :act, text, messages, locations)
 
         {:move, destination, text} ->
-          {move(state, locations, destination, text), tick_delay(), true}
+          {move(state, locations, destination, text, messages), tick_delay(), true}
 
         :wait ->
           {state, tick_delay(), false}
@@ -293,7 +296,7 @@ defmodule AgenticStories.Engine.CharacterAgent do
     # floor, and someone walking out has already left). The arrow is the
     # documented way; prose is what a model telling a story actually writes.
     case Narrator.implied_departure(story, character, locations, text) do
-      {:ok, location} -> {relocate(state, location, text, kind), tick_delay(), true}
+      {:ok, location} -> {relocate(state, location, text, kind, messages), tick_delay(), true}
       :none -> attempt(state, kind, text, messages)
     end
   end
@@ -301,7 +304,15 @@ defmodule AgenticStories.Engine.CharacterAgent do
   defp attempt(%{story: story, character: character} = state, kind, text, messages) do
     case verdict(character, text, messages) do
       :ok ->
-        Engine.character_message(story, character, kind, text)
+        state =
+          case Engine.character_message(story, character, kind, text) do
+            {:ok, _message} ->
+              maybe_note_stance(state, text, messages, character.location_id)
+
+            {:error, _reason} ->
+              state
+          end
+
         {state, tick_delay(), true}
 
       :collision ->
@@ -365,7 +376,7 @@ defmodule AgenticStories.Engine.CharacterAgent do
     end)
   end
 
-  defp move(%{story: story, character: character} = state, locations, name, text) do
+  defp move(%{story: story, character: character} = state, locations, name, text, messages) do
     case Stories.find_location(locations, name) || open_location(story, character, name) do
       nil ->
         state
@@ -381,15 +392,70 @@ defmodule AgenticStories.Engine.CharacterAgent do
 
         # a beat that speaks *and* leaves is still a :say (torch, guards)
         kind = if CharacterMind.spoken?(text), do: :say, else: :act
-        relocate(state, location, text, kind)
+        relocate(state, location, text, kind, messages)
     end
   end
 
-  defp relocate(%{story: story, character: character} = state, location, text, kind) do
+  defp relocate(%{story: story, character: character} = state, location, text, kind, messages) do
+    location_before = character.location_id
+
     case Engine.character_move(story, character, location, text, kind) do
-      {:ok, _message, character} -> %{state | character: character}
-      {:error, _reason} -> state
+      {:ok, _message, character} ->
+        %{state | character: character}
+        |> maybe_note_stance(text, messages, location_before)
+
+      {:error, _reason} ->
+        state
     end
+  end
+
+  # A bid's outcome, or a fact pinned while away from the player, becomes
+  # the next stance sentence. Ordinary co-located beats do not: a stance
+  # on every line would thrash, and costs a call. Best-effort — a failed
+  # note never undoes the beat.
+  defp maybe_note_stance(state, text, messages, location_before) do
+    character = state.character
+    attempt = CharacterMind.open_attempt(character, messages)
+    away? = away_from_player?(state.story.id, location_before)
+
+    if attempt || away? do
+      stances = character |> Stories.list_stances() |> Enum.map(& &1.content)
+
+      case CharacterMind.note_stance(
+             state.story,
+             character,
+             stances,
+             stance_happened(attempt, text, away?)
+           ) do
+        {:ok, sentence} -> Stories.append_character_stance(character, sentence)
+        :none -> :ok
+      end
+    end
+
+    state
+  end
+
+  defp away_from_player?(story_id, location_id) do
+    player_at = Stories.player_location_id(story_id)
+    not is_nil(player_at) and not is_nil(location_id) and player_at != location_id
+  end
+
+  defp stance_happened(attempt, text, away?) do
+    away =
+      if away? do
+        "You were not with the player. What you did:\n#{text}"
+      end
+
+    bid =
+      case attempt do
+        %Stories.Message{content: tried} ->
+          "The player tried: #{tried}\nWhat you did about it:\n#{text}"
+
+        nil ->
+          nil
+      end
+
+    [away, bid] |> Enum.reject(&is_nil/1) |> Enum.join("\n\n")
   end
 
   # The world is not fixed: a character who walks somewhere the story has

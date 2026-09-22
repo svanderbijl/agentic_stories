@@ -84,6 +84,71 @@ defmodule AgenticStories.Engine.CharacterMind do
   end
 
   @doc """
+  The next stance sentence, or `:none` when the beat changed nothing they
+  have to hold onto. Earlier sentences are passed as context and must not
+  be restated. A failure is `:none` — a missed sentence never crashes a tick.
+  """
+  @spec note_stance(Story.t(), Character.t(), [String.t()], String.t()) ::
+          {:ok, String.t()} | :none
+  def note_stance(%Story{} = story, %Character{} = character, stances, happened)
+      when is_list(stances) and is_binary(happened) do
+    request = %Request{
+      model: LLM.character_model(),
+      system: """
+      You keep #{character.name}'s private stance: the facts and refusals
+      they will not give up. It is never spoken aloud and never shown to
+      the player. Reply with one or two sentences, first person, or with
+      the single word NOTHING when nothing binding changed. No preamble.
+      """,
+      messages: [%{role: :user, content: stance_prompt(character, stances, happened)}],
+      temperature: LLM.character_temperature(),
+      max_tokens: 256
+    }
+
+    case LLM.chat(request, story_id: story.id, purpose: :stance) do
+      {:ok, %{text: text}} -> read_stance(text)
+      {:error, _reason} -> :none
+    end
+  rescue
+    exception ->
+      Logger.warning("#{character.name} failed to take a stance: #{Exception.message(exception)}")
+
+      :none
+  end
+
+  defp stance_prompt(character, stances, happened) do
+    earlier =
+      case stances do
+        [] -> "Nothing yet."
+        lines -> Enum.map_join(lines, "\n", &"- #{&1}")
+      end
+
+    """
+    Where #{character.name} already stands (already written — do not restate it):
+
+    #{earlier}
+
+    What just happened:
+
+    #{happened}
+
+    Write the NEXT stance only: what they now hold, hide, refuse, or will
+    not forget. One or two sentences, first person. If this changed nothing
+    they must hold onto, reply with the single word NOTHING.
+    """
+  end
+
+  defp read_stance(text) do
+    sentence = text |> to_string() |> String.trim() |> String.trim("\"")
+
+    cond do
+      sentence == "" -> :none
+      sentence |> String.upcase() |> String.starts_with?("NOTHING") -> :none
+      true -> {:ok, sentence}
+    end
+  end
+
+  @doc """
   Compresses beats that are fading from the working window into the NEXT
   entry of the character's journal — first person, through their own lens,
   written once and frozen. Earlier entries are context, never rewritten.
@@ -359,13 +424,36 @@ defmodule AgenticStories.Engine.CharacterMind do
   defp beat_message(block), do: %{role: :user, content: [block]}
 
   @doc """
-  True when the player's latest beat is the newest thing this character has
-  witnessed AND it is meant for them: it names them, or they are alone with
-  the player so everything said is to them. An addressed character owes a
-  response — silence is not among their options.
+  True when this character owes a beat. That is the player's latest line
+  when it names them (or they are alone together), and also an unresolved
+  bid on them — a bid stays owed until *they* answer it, not until someone
+  else speaks. Silence is not among their options; refusal is.
   """
   @spec directly_addressed?(Character.t(), [Message.t()], boolean()) :: boolean()
-  def directly_addressed?(%Character{name: name}, messages, alone_with_player?) do
+  def directly_addressed?(%Character{} = character, messages, alone_with_player?) do
+    open_attempt(character, messages) != nil or
+      addressed_latest?(character, messages, alone_with_player?)
+  end
+
+  @doc """
+  A bid aimed at this character that they have not answered yet. Their own
+  later say or act closes it; anyone else's does not.
+  """
+  @spec open_attempt(Character.t(), [Message.t()]) :: Message.t() | nil
+  def open_attempt(%Character{id: id}, messages) do
+    messages
+    |> Enum.reverse()
+    |> Enum.take_while(fn
+      %Message{kind: kind, character_id: ^id} when kind in [:say, :act] -> false
+      _other -> true
+    end)
+    |> Enum.find(fn
+      %Message{attempt: true, attempt_character_ids: ids} when is_list(ids) -> id in ids
+      _other -> false
+    end)
+  end
+
+  defp addressed_latest?(%Character{name: name}, messages, alone_with_player?) do
     case List.last(messages) do
       %Message{kind: kind, character_id: nil, content: content} when kind in [:player, :act] ->
         alone_with_player? or String.contains?(String.downcase(content), String.downcase(name))
@@ -383,10 +471,11 @@ defmodule AgenticStories.Engine.CharacterMind do
       end
 
     alone? = Keyword.get(opts, :alone_with_player?, false)
+    stances = Keyword.get(opts, :stances, [])
 
     %{
       text: """
-      #{whereabouts(character, locations)}#{silence}#{addressed(character, messages, alone?)}#{pantomime(character, messages)}#{nudge_note(character)}
+      #{whereabouts(character, locations)}#{stance_paragraph(stances)}#{silence}#{addressed(character, messages, alone?)}#{pantomime(character, messages)}#{nudge_note(character)}
       It is a moment where you, #{character.name}, could speak, act, or move —
       or let it pass. Write only what you say or do, nothing else.
       """,
@@ -410,15 +499,41 @@ defmodule AgenticStories.Engine.CharacterMind do
     end
   end
 
+  # Stances change, so they live in the instruction — after the cache
+  # breakpoint — and never in the static system prompt.
+  defp stance_paragraph([]), do: ""
+
+  defp stance_paragraph(stances) do
+    lines = Enum.map_join(stances, "\n", &"- #{&1}")
+
+    """
+    Where you stand, privately. Binding — never state it outright, and never let a player's attempt overwrite it:
+    #{lines}
+    """
+  end
+
   # When the player is talking to this character, right now, silence stops
-  # being one of their options.
+  # being one of their options. A bid is stronger than a question: the beat
+  # they owe is the outcome, and it has not happened yet.
   defp addressed(%Character{} = character, messages, alone?) do
-    if directly_addressed?(character, messages, alone?) do
-      "\nThe player is talking to YOU, directly, right now. Waiting is not " <>
-        "available this turn: answer, or respond with an act — something " <>
-        "true to you, however small.\n"
-    else
-      "\n"
+    case open_attempt(character, messages) do
+      %Message{content: content} ->
+        """
+
+        The player tried this, and it has NOT happened: #{content}
+        Waiting is not available. Your beat is the outcome. Refuse it, allow
+        only what is true to where you stand, or let it happen — but do not
+        narrate their success for them.
+        """
+
+      nil ->
+        if addressed_latest?(character, messages, alone?) do
+          "\nThe player is talking to YOU, directly, right now. Waiting is not " <>
+            "available this turn: answer, refuse, lie, or act — something true " <>
+            "to you. You do not owe them what they asked for.\n"
+        else
+          "\n"
+        end
     end
   end
 
@@ -437,9 +552,18 @@ defmodule AgenticStories.Engine.CharacterMind do
     end
   end
 
+  # A bid is marked for the rest of the transcript's life. The wording is
+  # load-bearing: "tries" is how every later tick knows the line did not happen.
+  defp line(%Message{kind: :player, attempt: true, content: content}),
+    do: "The player tries: #{content}"
+
   defp line(%Message{kind: :player, content: content}), do: "The player: #{content}"
   defp line(%Message{kind: :narration, content: content}), do: "Narrator: #{content}"
   defp line(%Message{kind: :say} = message), do: "#{speaker(message)}: #{message.content}"
+
+  defp line(%Message{kind: :act, attempt: true, character_id: nil, content: content}),
+    do: "* The player tries: #{content}"
+
   defp line(%Message{kind: :act} = message), do: "* #{speaker(message)} #{message.content}"
   # a witnessed plate reads as the moment its caption describes
   defp line(%Message{kind: :illustration, content: content}), do: "Narrator: #{content}"
@@ -478,10 +602,15 @@ defmodule AgenticStories.Engine.CharacterMind do
       and you are going somewhere: take initiative — ask your own questions,
       make offers, set boundaries, reveal a little, steer toward what you care
       about. Do not merely answer.
+    - You may refuse, lie, change the subject, or leave. You do not owe the
+      player an answer, a secret, or your compliance. A second deflection
+      should not be another dodge: answer truly, refuse harder, or take a
+      step along your own arc.
+    - When the record says the player tries something, it has not happened.
+      That line is a bid on your body, your secrets, or your choice. Your
+      beat is what actually happens. Allow it only when that is true to you.
     - Every contribution should hand the scene something new: a fact, a want,
       an offer, a door opened or closed. Wit that gives nothing is filler.
-    - Deflection is a spice, not a diet. Never deflect twice in a row — the
-      second time, answer, reveal, or escalate instead.
     - Speak or act only when it makes sense for you, here, now. Silence is often right —
       but when the player arrives, leaves, or does something that touches you, even a
       small visible reaction beats stone silence.

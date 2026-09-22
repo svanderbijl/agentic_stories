@@ -41,6 +41,7 @@ defmodule AgenticStories.Stories.Character do
     belongs_to :story, AgenticStories.Stories.Story
     belongs_to :location, AgenticStories.Stories.Location
     has_many :memories, AgenticStories.Stories.CharacterMemory
+    has_many :stances, AgenticStories.Stories.CharacterStance
 
     timestamps(type: :utc_datetime)
   end

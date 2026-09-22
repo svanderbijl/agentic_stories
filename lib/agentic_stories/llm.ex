@@ -15,7 +15,7 @@ defmodule AgenticStories.LLM do
   @doc """
   Sends a chat request through the configured adapter. `meta` feeds the cost
   ledger: pass `story_id:` and `purpose:` (`:weave`, `:tick`, `:consolidate`,
-  `:direct`, `:residue`, `:recap`) so every story knows what it spent.
+  `:stance`, `:direct`, `:residue`, `:recap`) so every story knows what it spent.
   """
   @spec chat(Request.t(), keyword()) :: {:ok, Response.t()} | {:error, term()}
   def chat(%Request{} = request, meta \\ []) do
